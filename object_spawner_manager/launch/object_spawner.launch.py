@@ -30,7 +30,8 @@ def generate_launch_description():
         executable="object_spawner_manager.py",
         #namespace = '',
         parameters=[
-        ]
+        ],
+        emulate_tty=True
     )
     
     object_topic_publisher = Node(
@@ -39,21 +40,22 @@ def generate_launch_description():
         executable="spawn_object_tf.py",
         #namespace = '',
         parameters=[
-        ]
+        ],
+        emulate_tty=True
     )
-
 
     moveit_object_publisher = Node(
         name="object_spawner_moveit",
         package="object_spawner_manager",
         executable="spawn_object_in_moveit",
         parameters=[
-        ]
+        ],
+        emulate_tty=True
     )
 
     ld.add_action(object_spawner_manager)
     ld.add_action(object_topic_publisher)
-    ld.add_action(moveit_object_publisher)
+    #ld.add_action(moveit_object_publisher)
 
     return ld
 

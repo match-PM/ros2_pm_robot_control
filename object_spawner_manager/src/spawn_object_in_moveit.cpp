@@ -65,7 +65,7 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
 
       if (obj_exists == false){
         obj_names_list.push_back(request->obj_name);
-        obj_stl_paths_list.push_back(request->stl_path);
+        obj_stl_paths_list.push_back(request->cad_data);
         RCLCPP_INFO(this->get_logger(), "Spawning %s in Moveit", request->obj_name.c_str());
       }
 
