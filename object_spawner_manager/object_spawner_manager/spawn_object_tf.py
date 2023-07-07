@@ -142,8 +142,7 @@ class TFPublisherNode(Node):
                 if request.frame_name == frame_name:
                     self.ref_frame_parent_names_list[index]   = request.parent_frame
                     self.ref_frame_poses_list[index]       = request.pose
-                    self.get_logger().warn(f'Service for creating {request.frame_name} was called, but frame does already exist!')
-                    self.get_logger().warn(f'Information for {request.frame_name} updated!')
+                    self.get_logger().warn(f'Service for creating {request.frame_name} was called, but frame does already exist! Information for {request.frame_name} updated!')
                     response.success = True
 
         return response
@@ -192,7 +191,9 @@ class TFPublisherNode(Node):
                 self.publsih_topics()
                 self.logger.info(f'{obj_name} destroyed!!!')
                 response.success = True
-
+                return response
+            
+        self.logger.error(f'Tried to destroy {request.obj_name}, but object does not exist!')
         return response
 
 

@@ -213,8 +213,13 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
         detach_object.object.id = obj_name;
         detach_object.object.operation = detach_object.object.REMOVE;
         bool detach_success = planning_scene_interface_.applyAttachedCollisionObject(detach_object);
+        RCLCPP_WARN(this->get_logger(), "INFO");
+        std::vector<std::string> myVector = planning_scene_interface_.getKnownObjectNames();
+        for (const auto& element : myVector) {
+          RCLCPP_ERROR(this->get_logger(), "Exception : %s", element.c_str());
+        }
 
-        RCLCPP_ERROR(this->get_logger(), "Exception occurred: %i", detach_success);
+        RCLCPP_INFO(this->get_logger(), "Part deletion success??: %i", detach_success);
 
         if (detach_success == true){
           std::vector<std::string> objects_to_delete;

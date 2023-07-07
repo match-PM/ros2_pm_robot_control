@@ -55,7 +55,7 @@ def generate_launch_description():
 
     ld.add_action(object_spawner_manager)
     ld.add_action(object_topic_publisher)
-    #ld.add_action(moveit_object_publisher)
+    ld.add_action(moveit_object_publisher)
 
     return ld
 
