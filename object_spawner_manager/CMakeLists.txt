@@ -57,9 +57,32 @@ target_link_libraries(spawn_object_in_moveit
   ${DEPENDENCIES}
 )
 
+# Create Cpp executable
+add_executable(spawn_object_in_moveit_V src/spawn_object_in_moveit_V.cpp)
+
+ament_target_dependencies(spawn_object_in_moveit_V
+  rclcpp 
+  moveit_core
+  moveit_ros_planning
+  moveit_ros_planning_interface
+  geometric_shapes
+  ${THIS_PACKAGE_INCLUDE_DEPENDS} 
+  Boost 
+  moveit_msgs
+  rclcpp_action
+  tf2_ros
+  std_msgs
+  spawn_object_interfaces
+)
+
+target_link_libraries(spawn_object_in_moveit_V
+  ${DEPENDENCIES}
+)
+
 # Install Cpp executables
 install(TARGETS
   spawn_object_in_moveit
+  spawn_object_in_moveit_V
   DESTINATION lib/${PROJECT_NAME}
 )
 # Install Python modules

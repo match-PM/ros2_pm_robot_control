@@ -47,7 +47,7 @@ def generate_launch_description():
     moveit_object_publisher = Node(
         name="object_spawner_moveit",
         package="object_spawner_manager",
-        executable="spawn_object_in_moveit",
+        executable="spawn_object_in_moveit_V",
         parameters=[
         ],
         emulate_tty=True

@@ -99,8 +99,6 @@ class TFPublisherNode(Node):
             object_publish_executed =result.success
             #object_publish_executed = bool (result.success)
 
-        self.logger.info('test')
-
         # spawning part in moveit
         if object_publish_executed:
             if not self.moveit_object_spawner_client.wait_for_service(timeout_sec=2.0):
