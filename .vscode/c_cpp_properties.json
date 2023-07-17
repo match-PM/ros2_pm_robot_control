@@ -4,7 +4,10 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/opt/ros/humble/include/**"
+                "/opt/ros/humble/include/**",
+                "/opt/ros/humble/include/moveit/**",
+                "/opt/ros/humble/include/moveit/move_group_interface/**"
+
             ],
             "defines": [],
             "compilerPath": "/usr/bin/clang-14",
