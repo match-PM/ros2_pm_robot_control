@@ -1,0 +1,9 @@
+string frame_name
+geometry_msgs/Pose move_to_pose
+geometry_msgs/Vector3 translation
+bool exec_wait_for_user_input
+bool execute
+---
+bool success
+string[] joint_names
+float32[] joint_values

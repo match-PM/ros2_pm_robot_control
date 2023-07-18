@@ -5,8 +5,10 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "/opt/ros/humble/include/**",
-                "/opt/ros/humble/include/moveit/**",
-                "/opt/ros/humble/include/moveit/move_group_interface/**"
+                //"/opt/ros/humble/include/moveit/**",
+                //"/opt/ros/humble/include/moveit/move_group_interface/**",
+                "/opt/ros/humble/include/rclcpp/**",
+                "/home/niklas/ros2_ws/install/pm_moveit_interfaces/include/**",
 
             ],
             "defines": [],

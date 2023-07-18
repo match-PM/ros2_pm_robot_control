@@ -16,9 +16,8 @@ find_package(moveit_ros_planning REQUIRED)
 find_package(spawn_object_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(pm_moveit_interfaces REQUIRED)
-
-
-message(STATUS "urdf_INCLUDE_DIRS: ${urdf_INCLUDE_DIRS}")
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 # uncomment the following section in order to fill in further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -32,6 +31,8 @@ include_directories(
   ${urdfdom_INCLUDE_DIRS}  
   ${moveit_ros_planning_interface_INCLUDE_DIRS}
   ${shapes_INCLUDE_DIRS}
+  ${tf2_INCLUDE_DIRS}
+  ${tf2_ros_INCLUDE_DIRS}
   include
 )
 
@@ -43,11 +44,10 @@ ament_target_dependencies(pm_moveit_server
   moveit_ros_planning
   moveit_ros_planning_interface
   ${THIS_PACKAGE_INCLUDE_DEPENDS} 
-  Boost 
   moveit_msgs
-  rclcpp_action
   tf2_ros
   std_msgs
+  tf2
   pm_moveit_interfaces
 )
 
