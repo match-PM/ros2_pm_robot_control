@@ -5,20 +5,29 @@
 
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/robot_model_loader/robot_model_loader.h>
-#include <moveit/robot_model/robot_model.h>
-#include <moveit/robot_state/robot_state.h>
+//#include <moveit/robot_model/robot_model.h>
+//#include <moveit/robot_state/robot_state.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include "std_msgs/msg/string.hpp"
 #include <tf2_msgs/msg/tf_message.hpp>
+#include <moveit/robot_model_loader/robot_model_loader.h>
+
 
 #include <moveit/planning_scene/planning_scene.h>
 
 #include <geometric_shapes/shape_operations.h>
 #include <geometric_shapes/mesh_operations.h>
-
+#include <tf2_ros/transform_listener.h>
 #include "spawn_object_interfaces/srv/spawn_object.hpp"
 #include "spawn_object_interfaces/srv/destroy_object.hpp"
+#include "spawn_object_interfaces/srv/disable_obj_collision.hpp"
+#include <iostream>
+#include <fstream>
+
 using std::placeholders::_1;
+
+std::shared_ptr<robot_model_loader::RobotModelLoader> PM_Robot_Model_Loader;
+
 
 class MoveitObjectSpawnerNode : public rclcpp::Node
   {
@@ -28,6 +37,11 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
     std::vector<std::string> obj_stl_paths_list;
     rclcpp::Service<spawn_object_interfaces::srv::SpawnObject>::SharedPtr spawn_object_service;
     rclcpp::Service<spawn_object_interfaces::srv::DestroyObject>::SharedPtr destroy_object_service;
+    rclcpp::Service<spawn_object_interfaces::srv::DisableObjCollision>::SharedPtr disable_collision_service;
+    std::string robot_description_string;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    
 
     MoveitObjectSpawnerNode() : Node("my_node")
     {
@@ -35,6 +49,7 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
 
       spawn_object_service = this->create_service<spawn_object_interfaces::srv::SpawnObject>("moveit_object_handler/spawn_object", std::bind(&MoveitObjectSpawnerNode::spawn_object, this,std::placeholders::_1, std::placeholders::_2));
       destroy_object_service = this->create_service<spawn_object_interfaces::srv::DestroyObject>("moveit_object_handler/destroy_object", std::bind(&MoveitObjectSpawnerNode::destroy_object, this,std::placeholders::_1, std::placeholders::_2));
+      disable_collision_service = this->create_service<spawn_object_interfaces::srv::DisableObjCollision>("spawn_object_manager/disable_collision_of_object", std::bind(&MoveitObjectSpawnerNode::disable_collision, this,std::placeholders::_1, std::placeholders::_2));
 
       tf_subscriber_ = this->create_subscription<tf2_msgs::msg::TFMessage>("/tf_static", 10, std::bind(&MoveitObjectSpawnerNode::tfCallback, this, _1));
       planning_scene_diff_publisher =this->create_publisher<moveit_msgs::msg::PlanningScene>("planning_scene", 1);
@@ -45,6 +60,10 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
         RCLCPP_WARN(this->get_logger(), "Waiting for planing scene...");
       }
 
+      //tf_buffer_ = tf2_ros::Buffer(this->get_clock(), tf2::Duration(10), this->shared_from_this());
+      tf_buffer_ =      std::make_unique<tf2_ros::Buffer>(this->get_clock());
+
+      tf_listener_ =      std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
       
     }
 
@@ -56,9 +75,23 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
     std::vector<moveit_msgs::msg::AttachedCollisionObject> collision_objects_list;
     moveit_msgs::msg::PlanningScene planning_scene;
 
+    void disable_collision(const std::shared_ptr<spawn_object_interfaces::srv::DisableObjCollision::Request> request, std::shared_ptr<spawn_object_interfaces::srv::DisableObjCollision::Response>response){
+      return;
+    }
+
     void spawn_object(const std::shared_ptr<spawn_object_interfaces::srv::SpawnObject::Request> request, std::shared_ptr<spawn_object_interfaces::srv::SpawnObject::Response>      response)
     {
       bool obj_exists = false;
+      //robot_description_string=kinematic_model->getURDF();
+      //RCLCPP_INFO(this->get_logger(), "TEST   %s", robot_description_string.c_str());
+
+      
+      std::ifstream file(request->cad_data);
+      if (!file.good()){
+        RCLCPP_ERROR(this->get_logger(),"CAD-File not found!");
+        response->success=false;
+        return;
+      }
 
       for (const auto& obj_name : obj_names_list) {
         if (obj_name == request->obj_name){
@@ -111,9 +144,10 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
       }      
     }
 
-
     void tfCallback(const tf2_msgs::msg::TFMessage::SharedPtr msg)
     {
+
+      // List all registered objects in terminal
       RCLCPP_INFO(this->get_logger(), "Objects in Moveit:");
       int i = 1;
       for (const auto& value : obj_names_list) {
@@ -126,37 +160,64 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
       {
         
         for (const auto& obj_name : obj_names_list) {
-          if (obj_name == transform.child_frame_id)
-            {
-              geometry_msgs::msg::Pose object_pose;
-              object_pose.position.x      = transform.transform.translation.x;
-              object_pose.position.y      = transform.transform.translation.y;
-              object_pose.position.z      = transform.transform.translation.z;
-              object_pose.orientation.x   = transform.transform.rotation.x;
-              object_pose.orientation.y   = transform.transform.rotation.y;
-              object_pose.orientation.z   = transform.transform.rotation.z;
-              object_pose.orientation.w   = transform.transform.rotation.w;
-              std::string p_frame = transform.header.frame_id;
-              std::string c_frame = transform.child_frame_id;
+          // if frame name = object name
+          if (obj_name == transform.child_frame_id){
+            geometry_msgs::msg::Pose object_pose;
+            object_pose.position.x      = transform.transform.translation.x;
+            object_pose.position.y      = transform.transform.translation.y;
+            object_pose.position.z      = transform.transform.translation.z;
+            object_pose.orientation.x   = transform.transform.rotation.x;
+            object_pose.orientation.y   = transform.transform.rotation.y;
+            object_pose.orientation.z   = transform.transform.rotation.z;
+            object_pose.orientation.w   = transform.transform.rotation.w;
+            std::string p_frame = transform.header.frame_id;
+            std::string c_frame = transform.child_frame_id;
 
-              int index = -1;  
+            int index = -1;  
 
-              for (long unsigned int i = 0; i < obj_names_list.size(); ++i) {
-                if (obj_names_list[i] == obj_name) {
-                  index = (int)i;
-                  break;
-                }
+            //check if object exists in object list.
+            for (long unsigned int i = 0; i < obj_names_list.size(); ++i) {
+              if (obj_names_list[i] == obj_name) {
+                index = (int)i;
+                break;
               }
-
-              if (index != -1) {
-                std::string stl_path = obj_stl_paths_list[index];
-                apply_object_to_moveit(c_frame, p_frame, object_pose, stl_path);
-              } 
-              else {
-                RCLCPP_ERROR(this->get_logger(),"Error in tfCallback. Stl not found!");
-              }
-
             }
+
+            // if object exists in list
+            if (index != -1) {
+              std::string stl_path = obj_stl_paths_list[index];
+
+              std::string moveit_parent_frame = p_frame;
+
+              //Check if parent_frame is a robot link. if not find the next robot link.
+              bool parent_frame_is_robot_link = false;
+
+              const moveit::core::RobotModelPtr& kinematic_model = PM_Robot_Model_Loader->getModel();
+              std::vector<std::string> list_of_robot_links=kinematic_model->getLinkModelNames();
+              
+
+              while (!parent_frame_is_robot_link){
+                for (const std::string& link : list_of_robot_links) {
+                  if(moveit_parent_frame == link){
+                    parent_frame_is_robot_link = true;
+                    break;
+                  }
+                }
+
+                // if parent_frame is not a robot link, find the next link and check
+                if (parent_frame_is_robot_link == false){
+                  std::string new_movei_parent_frame;
+                  tf_buffer_->_getParent(moveit_parent_frame, tf2::TimePointZero, new_movei_parent_frame);
+                  moveit_parent_frame=new_movei_parent_frame;
+                }
+              } 
+              // RCLCPP_INFO(this->get_logger(), "Moveit_Parent_frame %s", moveit_parent_frame.c_str());
+              bool object_applied_success = apply_object_to_moveit(c_frame, moveit_parent_frame, object_pose, stl_path);
+            }
+            else {
+              RCLCPP_ERROR(this->get_logger(),"Error in tfCallback. Stl not found!");
+            }
+          }
         }
       }
     }
@@ -197,7 +258,6 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
           attached_object.object.header.frame_id = p_frame;
           //attached_object.transform = transform_stamped.transform;
           delete m;  // Cleanup the mesh object
-
 
           planning_scene.robot_state.attached_collision_objects.clear();
           planning_scene.world.collision_objects.clear(); 
@@ -269,6 +329,7 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
         for (const auto& element : myVector) {
           RCLCPP_ERROR(this->get_logger(), "Exception : %s", element.c_str());
         }
+        return true;
 
 
       }catch(const std::exception& ex){
@@ -282,6 +343,7 @@ int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<MoveitObjectSpawnerNode>();
+  PM_Robot_Model_Loader = std::make_shared<robot_model_loader::RobotModelLoader>(node,"robot_description");
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

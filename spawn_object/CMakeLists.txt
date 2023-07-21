@@ -15,7 +15,6 @@ find_package(moveit_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_ros_planning REQUIRED)
-find_package(tf2 REQUIRED)
 
 find_package(geometry_msgs REQUIRED)
 
@@ -35,7 +34,6 @@ include_directories(
   ${urdfdom_INCLUDE_DIRS}  
   ${moveit_ros_planning_interface_INCLUDE_DIRS}
   ${shapes_INCLUDE_DIRS}
-  ${tf2_INCLUDE_DIRS}
   include
 )
 # Create Cpp executable

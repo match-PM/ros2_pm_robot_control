@@ -96,20 +96,29 @@ class TFPublisherNode(Node):
             result = self.object_topic_publisher_client_spawn.call(request_forwarding)
             #rclpy.spin_until_future_complete(self, future)
             #result = self.future.result()
-            object_publish_executed =result.success
+            object_publish_success=result.success
             #object_publish_executed = bool (result.success)
 
         # spawning part in moveit
-        if object_publish_executed:
+        if object_publish_success:
             if not self.moveit_object_spawner_client.wait_for_service(timeout_sec=2.0):
                 self.logger.info('Spawn Service not available')
                 moveit_spawner_executed =  False
             
             if moveit_spawner_executed is None:
                 result = self.moveit_object_spawner_client.call(request_forwarding)
-                moveit_spawner_executed = result.success
+                moveit_spawner_success = result.success
+        
+        # Destroy object from publisher if spawn in moveit failed
+        if not moveit_spawner_success:
+            request_destroy = DestroyObject.Request()
+            request_destroy.obj_name=request.obj_name
+            result_destory = self.object_topic_publisher_client_destroy.call(request_destroy)
+            if (result_destory.success):
+                self.logger.error('Object was spawned in publisher, but failed to spawn in Moveit. Object was deleted from publisher! Service call ignored!')
+            
 
-        response.success = object_publish_executed and moveit_spawner_executed
+        response.success = object_publish_success and moveit_spawner_success
         return response
 
     # def spawn_object_callback(self, request :SpawnObject.Request, response :SpawnObject.Response):

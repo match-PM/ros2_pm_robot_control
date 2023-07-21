@@ -501,8 +501,9 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
   const moveit::core::JointModelGroup* joint_model_group = move_group->getCurrentState(1.0)-> getJointModelGroup(planning_group);
 
   const std::vector<std::string>& joint_names = joint_model_group->getVariableNames();
-
+  
   const moveit::core::RobotModelPtr& kinematic_model = PM_Robot_Model_Loader->getModel();
+
   moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
   robot_state->setToDefaultValues();
 
@@ -679,116 +680,6 @@ void move_group_laser(const std::shared_ptr<pm_moveit_interfaces::srv::MoveLaser
 
   return;
 }
-
-// bool move_group_cam1(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCamOneTo::Request> request, 
-//                       std::shared_ptr<pm_moveit_interfaces::srv::MoveCamOneTo::Response> response)
-// {
-  
-//   static const std::string PLANNING_GROUP = "PM_Robot_Cam1_TCP";
-
-//   std::string endeffector = Cam1_move_group->getEndEffectorLink();
-//   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Endeffector Link: %s", endeffector.c_str());
-
-//   const moveit::core::JointModelGroup* joint_model_group = Cam1_move_group->getCurrentState(1.0)-> getJointModelGroup(PLANNING_GROUP);
-
-//   const std::vector<std::string>& joint_names = joint_model_group->getVariableNames();
-
-//   const moveit::core::RobotModelPtr& kinematic_model = PM_Robot_Model_Loader->getModel();
-//   moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
-//   robot_state->setToDefaultValues();
-
-//   geometry_msgs::msg::Pose target_pose;
-//   std::vector<double> target_joint_values;
-
-//   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Model frame: %s", kinematic_model->getModelFrame().c_str());
-
-//   if(request->frame_name == ""){
-//     RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "TF frame not given. Considering given Pose!");
-
-//     target_pose.position.x = request->move_to_pose.position.x + request->translation.x;
-//     target_pose.position.y = request->move_to_pose.position.y + request->translation.y;
-//     target_pose.position.z = request->move_to_pose.position.z + request->translation.z;
-//     target_pose.orientation.x = 0;
-//     target_pose.orientation.y = 0;
-//     target_pose.orientation.z = 0;
-//     target_pose.orientation.w = 1;
-//   }
-//   else{
-//     RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "TF frame given. Ignoring given Pose!");
-//     std::string fromFrameRel = request->frame_name;
-//     std::string toFrameRel = "world";
-//     try {
-//       geometry_msgs::msg::TransformStamped frame_transform;
-//       frame_transform = tf_buffer_->lookupTransform(toFrameRel, fromFrameRel,tf2::TimePointZero);
-
-//       target_pose.position.x = frame_transform.transform.translation.x + request->translation.x;
-//       target_pose.position.y = frame_transform.transform.translation.y + request->translation.y;
-//       target_pose.position.z = frame_transform.transform.translation.z + request->translation.z;
-//       target_pose.orientation.x = 0;
-//       target_pose.orientation.y = 0;
-//       target_pose.orientation.z = 0;
-//       target_pose.orientation.w = 1;
-//     } 
-//     catch (const tf2::TransformException & ex) {
-//       RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Could not transform %s to %s: %s", toFrameRel.c_str(), fromFrameRel.c_str(), ex.what());
-//       response->success = false;
-//       return response->success;
-//     }
-//   }
-
-//   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Pose:");
-//   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose X %f", target_pose.position.x);
-//   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Y %f", target_pose.position.y);
-//   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Z %f", target_pose.position.z);
-
-//   double timeout = 0.1;
-//   bool success_found_ik = robot_state->setFromIK(joint_model_group, target_pose, timeout);
-
-//   bool success_calculate_plan = false;
-
-//   if (success_found_ik)
-//   { 
-//     RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "IK solution found!");
-//     robot_state->copyJointGroupPositions(joint_model_group, target_joint_values);
-//     for (std::size_t i = 0; i < joint_names.size(); ++i)
-//       {
-//         RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Joint Values for %s: %f", joint_names[i].c_str(), target_joint_values[i]);
-//         response->joint_values.push_back(target_joint_values[i]);
-//         response->joint_names.push_back(joint_names[i]);
-//       }
-
-//     Cam1_move_group->setStartStateToCurrentState();
-//     Cam1_move_group->setJointValueTarget(target_joint_values);
-//     success_calculate_plan = (Cam1_move_group->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-
-//     if (success_calculate_plan){
-      
-//       response->success = true;
-//     }
-//     else{
-//       RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "Planing failed!");
-//       response->success = false;
-//     }
-//   }
-//   else
-//   {
-//     RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "Did not find IK solution");
-//     response->success = false;
-//   }
-
-//   // Execute the plan
-//   if(success_calculate_plan && request->execute) {
-//     Cam1_move_group->execute(plan);
-//   } else {
-//     RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Plan not executed!");
-//   }
-
-//   return response->success;
-// }
-
-
-
-
 
 
 
