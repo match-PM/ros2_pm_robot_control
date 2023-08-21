@@ -450,17 +450,21 @@ ros2 service call /pm_moveit_server/move_laser_to_frame pm_moveit_interfaces/srv
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include "std_msgs/msg/string.hpp"
 #include <tf2_msgs/msg/tf_message.hpp>
+#include <pluginlib/class_loader.hpp>
+#include <moveit/kinematic_constraints/utils.h>
 
 #include "tf2/exceptions.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
-
+#include <Eigen/Geometry>
 #include "pm_moveit_interfaces/srv/execute_plan.hpp"
 #include "pm_moveit_interfaces/srv/move_cam1_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_laser_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_tool_tcp_to.hpp"
 
-
+#include <moveit_msgs/msg/planning_scene.h>
+#include <moveit_msgs/msg/display_trajectory.hpp>
+#include <moveit/planning_interface/planning_interface.h>
 #include <moveit/planning_scene/planning_scene.h>
 
 using std::placeholders::_1;
@@ -477,6 +481,9 @@ moveit::planning_interface::MoveGroupInterface::Plan plan;
 std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
 std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
 
+std::unique_ptr<pluginlib::ClassLoader<planning_interface::PlannerManager>> planner_plugin_loader;
+planning_interface::PlannerManagerPtr planner_instance;
+std::string planner_plugin_name;
 
 bool execute_plan(const std::shared_ptr<pm_moveit_interfaces::srv::ExecutePlan::Request> request, 
                       std::shared_ptr<pm_moveit_interfaces::srv::ExecutePlan::Response> response
@@ -485,8 +492,36 @@ bool execute_plan(const std::shared_ptr<pm_moveit_interfaces::srv::ExecutePlan::
   return true;
 }
 
+Eigen::Isometry3d convertPoseToIsometry3d(const geometry_msgs::msg::Pose & pose_msg) {
+  Eigen::Isometry3d isometry;
 
-std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std::string planning_group, 
+  // Set translation (position)
+  isometry.translation().x() = pose_msg.position.x;
+  isometry.translation().y() = pose_msg.position.y;
+  isometry.translation().z() = pose_msg.position.z;
+
+  // Set rotation (orientation)
+  Eigen::Quaterniond quat(pose_msg.orientation.w,
+                          pose_msg.orientation.x,
+                          pose_msg.orientation.y,
+                          pose_msg.orientation.z);
+  isometry.linear() = quat.toRotationMatrix();
+
+  return isometry;
+}
+
+geometry_msgs::msg::PoseStamped convertPoseToPoseStamped(const geometry_msgs::msg::Pose pose_msg, std::string frame_id) {
+    geometry_msgs::msg::PoseStamped pose_stamped;
+    // Set the header of the PoseStamped message
+    pose_stamped.header.frame_id = frame_id;
+    // Copy the position and orientation from the input Pose message
+    pose_stamped.pose.position = pose_msg.position;
+    pose_stamped.pose.orientation = pose_msg.orientation;
+
+    return pose_stamped;
+}
+
+std::tuple<bool, std::vector<std::string>, std::vector<double>> move_planning_group( std::string planning_group, 
                                                                             std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group,
                                                                             std::string frame_name,
                                                                             geometry_msgs::msg::Pose move_to_pose,
@@ -494,7 +529,6 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
                                                                             bool exec_wait_for_user_input,
                                                                             bool execute)
 {
-
   std::string endeffector = move_group->getEndEffectorLink();
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Endeffector Link: %s", endeffector.c_str());
 
@@ -504,8 +538,19 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
   
   const moveit::core::RobotModelPtr& kinematic_model = PM_Robot_Model_Loader->getModel();
 
+  /* Create a RobotState and JointModelGroup to keep track of the current robot pose and planning group*/
+
   moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
+
+  const moveit::core::JointModelGroup* joint_model_group_2 = robot_state->getJointModelGroup(planning_group);
+
   robot_state->setToDefaultValues();
+
+  planning_scene::PlanningScenePtr planning_scene(new planning_scene::PlanningScene(kinematic_model));
+
+  // Configure a valid robot state
+  planning_scene->getCurrentStateNonConst().setToDefaultValues(joint_model_group_2, "ready");
+
 
   geometry_msgs::msg::Pose target_pose;
   std::vector<double> target_joint_values;
@@ -514,7 +559,6 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
 
   if(frame_name == ""){
     RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "TF frame not given. Considering given Pose!");
-
     target_pose.position.x = move_to_pose.position.x + translation.x;
     target_pose.position.y = move_to_pose.position.y + translation.y;
     target_pose.position.z = move_to_pose.position.z + translation.z;
@@ -546,14 +590,45 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
     }
   }
 
+  geometry_msgs::msg::PoseStamped target_pose_staped = convertPoseToPoseStamped(target_pose, "world");
+
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Pose:");
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose X %f", target_pose.position.x);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Y %f", target_pose.position.y);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Z %f", target_pose.position.z);
 
-  double timeout = 0.1;
+  std::vector<double> tolerance_pose(3, 0.01);
+  std::vector<double> tolerance_angle(3, 0.01);
+  moveit_msgs::msg::Constraints pose_goal = kinematic_constraints::constructGoalConstraints(endeffector, target_pose_staped, tolerance_pose, tolerance_angle);
+  planning_interface::MotionPlanRequest req;
+  planning_interface::MotionPlanResponse res;
+  req.group_name = planning_group;
+  req.goal_constraints.push_back(pose_goal);
+  req.planner_id = "OMPL";
+  RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "IIIIINNNNNNNNFOOOOOOOOOO");
+
+  planning_interface::PlanningContextPtr context = planner_instance->getPlanningContext(planning_scene, req, res.error_code_);
+
+  context->solve(res);
+
+  if (res.error_code_.val != res.error_code_.SUCCESS)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "Could not compute plan successfully");
+  }
+
+  double timeout = 2.0;
   // Calculate Inverse Kinematik Solution
+  //const std::vector< double > limits = {0.0000001, 0.0000001, 0.0000001, 0.0000001};
+  const std::vector< double > limits = {0.1, 0.1, 0.1, 0.1};
+
+  auto conv = convertPoseToIsometry3d(target_pose);
+
   bool success_found_ik = robot_state->setFromIK(joint_model_group, target_pose, timeout);
+  //bool success_found_ik = robot_state->setFromIK(joint_model_group, conv, planning_group, constraints);
+  //bool success_found_ik = robot_state->setFromIK(joint_model_group, conv, planning_group, limits);
+
+
+  //bool success_found_ik = robot_state->setFromIK(robot_state->getJointModelGroup(planning_group), target_pose, timeout, move_group->getEndEffector(),);
 
   bool success_calculate_plan = false;
 
@@ -625,7 +700,7 @@ void move_group_cam1(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1Tc
                       std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpTo::Response> response)
 {
   
-  auto [success, joint_names, joint_values] = myfunction( "PM_Robot_Cam1_TCP",
+  auto [success, joint_names, joint_values] = move_planning_group( "PM_Robot_Cam1_TCP",
                                                           Cam1_move_group,
                                                           request->frame_name,
                                                           request->move_to_pose,
@@ -645,7 +720,7 @@ void move_group_tool(const std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTc
                       std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTcpTo::Response> response)
 {
   
-  auto [success, joint_names, joint_values] = myfunction( "PM_Robot_Tool_TCP",
+  auto [success, joint_names, joint_values] = move_planning_group( "PM_Robot_Tool_TCP",
                                                           tool_move_group,
                                                           request->frame_name,
                                                           request->move_to_pose,
@@ -665,7 +740,7 @@ void move_group_laser(const std::shared_ptr<pm_moveit_interfaces::srv::MoveLaser
                       std::shared_ptr<pm_moveit_interfaces::srv::MoveLaserTcpTo::Response> response)
 {
   
-  auto [success, joint_names, joint_values] = myfunction( "PM_Robot_Laser_TCP",
+  auto [success, joint_names, joint_values] = move_planning_group( "PM_Robot_Laser_TCP",
                                                           laser_move_group,
                                                           request->frame_name,
                                                           request->move_to_pose,
@@ -706,6 +781,35 @@ int main(int argc, char **argv)
   Cam1_move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(pm_moveit_server_node, "PM_Robot_Cam1_TCP");
 
   PM_Robot_Model_Loader = std::make_shared<robot_model_loader::RobotModelLoader>(pm_moveit_server_node,"robot_description");
+
+  const moveit::core::RobotModelPtr& kinematic_model = PM_Robot_Model_Loader->getModel();
+  if (!pm_moveit_server_node->get_parameter("planning_plugin", planner_plugin_name))
+    RCLCPP_FATAL(rclcpp::get_logger("pm_moveit"), "Could not find planner plugin name");
+  try
+  {
+    planner_plugin_loader.reset(new pluginlib::ClassLoader<planning_interface::PlannerManager>(
+        "moveit_core", "planning_interface::PlannerManager"));
+  }
+  catch (pluginlib::PluginlibException& ex)
+  {
+    RCLCPP_FATAL(rclcpp::get_logger("pm_moveit"), "Exception while creating planning plugin loader %s", ex.what());
+  }
+  try
+  {
+    planner_instance.reset(planner_plugin_loader->createUnmanagedInstance(planner_plugin_name));
+    if (!planner_instance->initialize(kinematic_model, pm_moveit_server_node, pm_moveit_server_node->get_namespace()))
+      RCLCPP_FATAL(rclcpp::get_logger("pm_moveit"), "Could not initialize planner instance");
+    RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Using planning interface '%s'", planner_instance->getDescription().c_str());
+  }
+  catch (pluginlib::PluginlibException& ex)
+  {
+    const std::vector<std::string>& classes = planner_plugin_loader->getDeclaredClasses();
+    std::stringstream ss;
+    for (const auto& cls : classes)
+      ss << cls << " ";
+    RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "Exception while loading planner '%s': %s\nAvailable plugins: %s", planner_plugin_name.c_str(),
+                 ex.what(), ss.str().c_str());
+  }
 
 
 

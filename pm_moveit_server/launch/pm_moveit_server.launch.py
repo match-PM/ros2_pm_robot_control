@@ -36,6 +36,16 @@ def generate_launch_description():
     
     sim_time = True
 
+    def load_yaml(package_name, file_path):
+        package_path = get_package_share_directory(package_name)
+        absolute_file_path = os.path.join(package_path, file_path)
+
+        try:
+            with open(absolute_file_path, "r") as file:
+                return yaml.safe_load(file)
+        except EnvironmentError:  # parent of IOError, OSError *and* WindowsError where available
+            return None
+        
     mappings={
         'launch_mode': 'sim_HW',
         'with_Tool_MPG_10': str(bringup_config['pm_robot_tools']['MPG_10']['with_Tool_MPG_10']),
@@ -57,7 +67,9 @@ def generate_launch_description():
         .to_moveit_configs()
     )
 
-
+    planning_yaml = load_yaml(
+        "pm_robot_moveit_config", "config/ompl_planning.yaml"
+    )
 
     pm_moveit_server = Node(
         package="pm_moveit_server",
@@ -69,6 +81,7 @@ def generate_launch_description():
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
             moveit_config.robot_description_kinematics,
+            {"planning_plugin": "ompl_interface/OMPLPlanner"}
         ],
         emulate_tty=True
     )
