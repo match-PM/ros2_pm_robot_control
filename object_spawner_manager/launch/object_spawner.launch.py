@@ -29,7 +29,7 @@ def generate_launch_description():
         package="object_spawner_manager",
         executable="object_spawner_manager.py",
         #namespace = '',
-        parameters=[
+        parameters=[{"use_sim_time": True},
         ],
         emulate_tty=True
     )
@@ -39,7 +39,7 @@ def generate_launch_description():
         package="object_spawner_manager",
         executable="spawn_object_tf.py",
         #namespace = '',
-        parameters=[
+        parameters=[{"use_sim_time": True},
         ],
         emulate_tty=True
     )
@@ -48,7 +48,7 @@ def generate_launch_description():
         name="object_spawner_moveit",
         package="object_spawner_manager",
         executable="spawn_object_in_moveit_V",
-        parameters=[
+        parameters=[{"use_sim_time": True},
         ],
         emulate_tty=True
     )

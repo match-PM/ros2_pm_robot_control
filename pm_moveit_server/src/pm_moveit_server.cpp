@@ -530,7 +530,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
     try {
       geometry_msgs::msg::TransformStamped frame_transform;
       frame_transform = tf_buffer_->lookupTransform(toFrameRel, fromFrameRel,tf2::TimePointZero);
-
+      
       target_pose.position.x = frame_transform.transform.translation.x + translation.x;
       target_pose.position.y = frame_transform.transform.translation.y + translation.y;
       target_pose.position.z = frame_transform.transform.translation.z + translation.z;
@@ -603,9 +603,9 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
       double deltaY = moved_to_pose.position.y - target_pose.position.y;
       double deltaZ = moved_to_pose.position.z - target_pose.position.z;
       RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Pose Deltas: ");
-      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "X: %f", deltaX);
-      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Y: %f", deltaY);
-      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Z: %f", deltaZ);
+      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "X: %f um", deltaX*1000000);
+      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Y: %f um", deltaY*1000000);
+      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Z: %f um", deltaZ*1000000);
 
     } 
     catch (const tf2::TransformException & ex) {
