@@ -450,6 +450,7 @@ ros2 service call /pm_moveit_server/move_laser_to_frame pm_moveit_interfaces/srv
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include "std_msgs/msg/string.hpp"
 #include <tf2_msgs/msg/tf_message.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include "tf2/exceptions.h"
 #include "tf2_ros/transform_listener.h"
@@ -491,6 +492,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
                                                                             std::string frame_name,
                                                                             geometry_msgs::msg::Pose move_to_pose,
                                                                             geometry_msgs::msg::Vector3 translation,
+                                                                            geometry_msgs::msg::Quaternion rotation,
                                                                             bool exec_wait_for_user_input,
                                                                             bool execute)
 {
@@ -512,12 +514,61 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
   bool service_success;
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Model frame: %s", kinematic_model->getModelFrame().c_str());
 
-  if(frame_name == ""){
+  geometry_msgs::msg::Quaternion target_rotation;
+  tf2::Quaternion rotation_tf, frame_rotation_tf, target_rotation_tf;
+
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Retrieved Rotation x: %f, y: %f, z: %f, w: %f",rotation.x,rotation.y,rotation.z,rotation.w);
+
+  // if rotation is not specified
+  if(rotation.w == 0.0 && rotation.w == 0.0 && rotation.w == 0.0 && rotation.w == 0.0 ){
+    
+    target_rotation.w=1;
+    target_rotation.x=0;
+    target_rotation.y=0;
+    target_rotation.z=0;
+    tf2::convert(target_rotation, rotation_tf); //convert msg::quaternion to tf2::quaternion
+  }
+  else{
+    tf2::convert(rotation, rotation_tf); //convert msg::quaternion to tf2::quaternion
+  }
+
+  geometry_msgs::msg::TransformStamped frame_transform;
+  
+  // if target position is (0,0,0) target pose is set the the endeffector; using the translation, this can be used for relative movement 
+  if(move_to_pose.position.x == 0.0 && move_to_pose.position.x == 0 && move_to_pose.position.x == 0.0){
+    RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "No pose or frame given! Executing relative movement with: x: %f, y: %f, z: %f",translation.x,translation.y,translation.z);
+    try {
+      frame_transform = tf_buffer_->lookupTransform("world", endeffector,tf2::TimePointZero);
+      target_pose.position.x = frame_transform.transform.translation.x + translation.x;
+      target_pose.position.y = frame_transform.transform.translation.y + translation.y;
+      target_pose.position.z = frame_transform.transform.translation.z + translation.z;
+
+      //target_pose.orientation = frame_transform.transform.rotation * target_rotation;
+      tf2::convert(frame_transform.transform.rotation, frame_rotation_tf); //convert msg::quaternion to tf2::quaternio
+      target_rotation_tf =  rotation_tf * frame_rotation_tf;
+      target_rotation_tf.normalize();
+      tf2::convert(target_rotation_tf, target_pose.orientation);
+      //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Orientation x: %f, y: %f, z: %f, w: %f",target_pose.orientation.x,target_pose.orientation.y,target_pose.orientation.z,target_pose.orientation.w);
+
+      // target_pose.orientation.x = frame_transform.transform.rotation.x;
+      // target_pose.orientation.y = frame_transform.transform.rotation.y;
+      // target_pose.orientation.z = frame_transform.transform.rotation.z;
+      // target_pose.orientation.w = frame_transform.transform.rotation.w;
+    } 
+    catch (const tf2::TransformException & ex) {
+      RCLCPP_FATAL(rclcpp::get_logger("pm_moveit"), "Could not transform %s to 'world': %s", endeffector.c_str(),  ex.what());
+      service_success = false;
+      return {service_success, joint_names, target_joint_values};
+    }    
+  }
+  // if frame_name is empty
+  else if(frame_name == ""){
     RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "TF frame not given. Considering given Pose!");
 
     target_pose.position.x = move_to_pose.position.x + translation.x;
     target_pose.position.y = move_to_pose.position.y + translation.y;
     target_pose.position.z = move_to_pose.position.z + translation.z;
+    //target_pose.orientation = move_to_pose.orientation * target_rotation;
     target_pose.orientation.x = 0;
     target_pose.orientation.y = 0;
     target_pose.orientation.z = 0;
@@ -550,6 +601,10 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose X %f", target_pose.position.x);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Y %f", target_pose.position.y);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Z %f", target_pose.position.z);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Orientation W %f", target_pose.orientation.w);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Orientation X %f", target_pose.orientation.x);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Orientation Y %f", target_pose.orientation.y);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Orientation Z %f", target_pose.orientation.z);
 
   double timeout = 0.1;
   // Calculate Inverse Kinematik Solution
@@ -615,7 +670,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
   } else {
     RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Plan not executed!");
   }
-
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
   return {service_success, joint_names, target_joint_values};
 
 }
@@ -630,6 +685,7 @@ void move_group_cam1(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1Tc
                                                           request->frame_name,
                                                           request->move_to_pose,
                                                           request->translation,
+                                                          request->rotation,
                                                           request->exec_wait_for_user_input,
                                                           request->execute);
 
@@ -650,6 +706,7 @@ void move_group_tool(const std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTc
                                                           request->frame_name,
                                                           request->move_to_pose,
                                                           request->translation,
+                                                          request->rotation,
                                                           request->exec_wait_for_user_input,
                                                           request->execute);
 
@@ -670,6 +727,7 @@ void move_group_laser(const std::shared_ptr<pm_moveit_interfaces::srv::MoveLaser
                                                           request->frame_name,
                                                           request->move_to_pose,
                                                           request->translation,
+                                                          request->rotation,
                                                           request->exec_wait_for_user_input,
                                                           request->execute);
 
@@ -722,7 +780,7 @@ int main(int argc, char **argv)
   rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpTo>::SharedPtr move_cam_one_service =pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpTo>("pm_moveit_server/move_cam1_to_frame", &move_group_cam1);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpTo>::SharedPtr move_tool_service =pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpTo>("pm_moveit_server/move_tool_to_frame", &move_group_tool);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveLaserTcpTo>::SharedPtr move_laser_service =pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveLaserTcpTo>("pm_moveit_server/move_laser_to_frame", &move_group_laser);
-
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Ready for operation...");
   spin_thread->join();
   rclcpp::shutdown();
   return 0;
