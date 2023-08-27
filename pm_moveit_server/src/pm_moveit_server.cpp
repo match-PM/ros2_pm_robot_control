@@ -535,7 +535,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction( std:
   geometry_msgs::msg::TransformStamped frame_transform;
   
   // if target position is (0,0,0) target pose is set the the endeffector; using the translation, this can be used for relative movement 
-  if(move_to_pose.position.x == 0.0 && move_to_pose.position.x == 0 && move_to_pose.position.x == 0.0){
+  if(move_to_pose.position.x == 0.0 && move_to_pose.position.x == 0 && move_to_pose.position.x == 0.0 && frame_name == ""){
     RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "No pose or frame given! Executing relative movement with: x: %f, y: %f, z: %f",translation.x,translation.y,translation.z);
     try {
       frame_transform = tf_buffer_->lookupTransform("world", endeffector,tf2::TimePointZero);
