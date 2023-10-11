@@ -1,7 +1,7 @@
 string obj_name
 string parent_frame
-float32[3] translation
-float32[4] rotation
+geometry_msgs/Vector3 translation
+geometry_msgs/Quaternion rotation
 string cad_data
 ---
 bool success

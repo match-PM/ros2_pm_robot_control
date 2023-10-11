@@ -40,25 +40,22 @@ class TFPublisherNode(Node):
     def __init__(self):
         super().__init__("object_topics_publisher")
 
-        #ros2 service call /object_manager/destroy_object spawn_object_interfaces/srv/DestroyObject "{obj_name: my_tessst_object}"
-        #ros2 service call /object_manager/spawn_object spawn_object_interfaces/srv/SpawnObject "{obj_name: my_tessst_object, parent_frame: world, translation:[1.0,1.0,3.0], rotation:[1.0,2.0,3.0,4.0]}"
         # Callbacks run simutaniously
-        self.callback_group = ReentrantCallbackGroup()
-        #self.service_done_event = Event()
+        self.callback_group_re = ReentrantCallbackGroup()
         # Callbacks can not run simutaniously
-        #self.callback_group = MutuallyExclusiveCallbackGroup()
+        self.callback_group_mu_ex = MutuallyExclusiveCallbackGroup()
 
-        self.object_topic_publisher_srv_spawn = self.create_service(SpawnObject,'object_manager/spawn_object',self.spawn_object_callback,callback_group=self.callback_group)
-        self.object_topic_publisher_srv_destroy = self.create_service(DestroyObject,'object_manager/destroy_object',self.destroy_object_callback,callback_group=self.callback_group)
-        self.object_topic_publisher_client_spawn = self.create_client(SpawnObject,'object_publisher/spawn_object',callback_group=self.callback_group) 
-        self.object_topic_publisher_client_destroy = self.create_client(DestroyObject,'object_publisher/destroy_object',callback_group=self.callback_group) 
+        self.object_topic_publisher_srv_spawn = self.create_service(SpawnObject,'object_manager/spawn_object',self.spawn_object_callback,callback_group=self.callback_group_re)
+        self.object_topic_publisher_srv_destroy = self.create_service(DestroyObject,'object_manager/destroy_object',self.destroy_object_callback,callback_group=self.callback_group_re)
+        self.object_topic_publisher_client_spawn = self.create_client(SpawnObject,'object_publisher/spawn_object',callback_group=self.callback_group_re) 
+        self.object_topic_publisher_client_destroy = self.create_client(DestroyObject,'object_publisher/destroy_object',callback_group=self.callback_group_re) 
 
-        self.moveit_object_spawner_client = self.create_client(SpawnObject,'moveit_object_handler/spawn_object',callback_group=self.callback_group) 
-        self.moveit_object_destroyer_client = self.create_client(DestroyObject,'moveit_object_handler/destroy_object',callback_group=self.callback_group)    
+        self.moveit_object_spawner_client = self.create_client(SpawnObject,'moveit_object_handler/spawn_object',callback_group=self.callback_group_re) 
+        self.moveit_object_destroyer_client = self.create_client(DestroyObject,'moveit_object_handler/destroy_object',callback_group=self.callback_group_re)    
 
         # Service for Spawning from Dictionary
-        self.object_spawn_from_dict = self.create_service(SpawnFromDict,'object_manager/spawn_from_dict',self.spawn_from_dict,callback_group=self.callback_group)
-        self.create_ref_frame_client = self.create_client(CreateRefFrame,'object_manager/create_ref_frame',callback_group=self.callback_group) 
+        self.object_spawn_from_dict = self.create_service(SpawnFromDict,'object_manager/spawn_from_dict',self.spawn_from_dict,callback_group=self.callback_group_re)
+        self.create_ref_frame_client = self.create_client(CreateRefFrame,'object_manager/create_ref_frame',callback_group=self.callback_group_re) 
 
         self.logger = self.get_logger()
 
@@ -103,27 +100,64 @@ class TFPublisherNode(Node):
 
         self.logger.info('Spawn Object Service received!')
         
+        # depricated
+        # if not self.object_topic_publisher_client_spawn.wait_for_service(timeout_sec=2.0):
+        #     self.logger.info('Spawn Service not available')
+        #     object_publish_executed =  False
+        
+        # if object_publish_executed is None:
+        #     # Spawning part in topic publisher
+        #     result = self.object_topic_publisher_client_spawn.call(request_forwarding)
+        #     #rclpy.spin_until_future_complete(self, future)
+        #     #result = self.future.result()
+        #     object_publish_success=result.success
+        #     #object_publish_executed = bool (result.success)
+
+        # # spawning part in moveit
+        # if object_publish_success:
+        #     if not self.moveit_object_spawner_client.wait_for_service(timeout_sec=2.0):
+        #         self.logger.info('Spawn Service not available')
+        #         moveit_spawner_executed =  False
+            
+        #     if moveit_spawner_executed is None:
+        #         result = self.moveit_object_spawner_client.call(request_forwarding)
+        #         moveit_spawner_success = result.success
+        
+        # # Destroy object from publisher if spawn in moveit failed
+        # if not moveit_spawner_success:
+        #     request_destroy = DestroyObject.Request()
+        #     request_destroy.obj_name=request.obj_name
+        #     result_destory = self.object_topic_publisher_client_destroy.call(request_destroy)
+        #     if (result_destory.success):
+        #         self.logger.error('Object was spawned in publisher, but failed to spawn in Moveit. Object was deleted from publisher! Service call ignored!')
+            
+
+        response.success = self.spawn_object_function (request)
+
+        return response
+
+    def spawn_object_function(self, SpwnRequest: SpawnObject.Request)->bool:
+
+        self.logger.info('Spawn Object Service received!')
         object_publish_executed =  None
         moveit_spawner_executed =  None
-        request_forwarding = SpawnObject.Request()
-        request_forwarding.obj_name         = request.obj_name 
-        request_forwarding.parent_frame     = request.parent_frame 
-        request_forwarding.translation      = request.translation 
-        request_forwarding.rotation         = request.rotation
-        request_forwarding.cad_data         = request.cad_data
 
+        self.logger.warn("SO_Check 1")
 
         if not self.object_topic_publisher_client_spawn.wait_for_service(timeout_sec=2.0):
             self.logger.info('Spawn Service not available')
             object_publish_executed =  False
         
         if object_publish_executed is None:
+            self.logger.info('Object handler called')
             # Spawning part in topic publisher
-            result = self.object_topic_publisher_client_spawn.call(request_forwarding)
+            result = self.object_topic_publisher_client_spawn.call(SpwnRequest)
             #rclpy.spin_until_future_complete(self, future)
             #result = self.future.result()
             object_publish_success=result.success
             #object_publish_executed = bool (result.success)
+
+        self.logger.warn("SO_Check 2")
 
         # spawning part in moveit
         if object_publish_success:
@@ -132,21 +166,23 @@ class TFPublisherNode(Node):
                 moveit_spawner_executed =  False
             
             if moveit_spawner_executed is None:
-                result = self.moveit_object_spawner_client.call(request_forwarding)
+                self.logger.info('Moveit Spawn called')
+                result = self.moveit_object_spawner_client.call(SpwnRequest)
                 moveit_spawner_success = result.success
-        
+
+        self.logger.warn("SO_Check 3")
+
         # Destroy object from publisher if spawn in moveit failed
         if not moveit_spawner_success:
             request_destroy = DestroyObject.Request()
-            request_destroy.obj_name=request.obj_name
+            request_destroy.obj_name=SpwnRequest.obj_name
             result_destory = self.object_topic_publisher_client_destroy.call(request_destroy)
             if (result_destory.success):
                 self.logger.error('Object was spawned in publisher, but failed to spawn in Moveit. Object was deleted from publisher! Service call ignored!')
-            
-
-        response.success = object_publish_success and moveit_spawner_success
-        return response
-
+        
+        self.logger.warn("SO_Check 4")
+        self.logger.warn("SUceess")
+        return (object_publish_success and moveit_spawner_success)
 
     def spawn_from_dict(self, request :SpawnFromDict.Request, response :SpawnFromDict.Response):
         dictionarys_to_spawn = self.process_input_dict(request.dict)
@@ -154,14 +190,32 @@ class TFPublisherNode(Node):
 
         for req in objects_to_spawn:
 
-            CreateRefFrame_Req = SpawnObject.Request()
-            CreateRefFrame_Res = SpawnObject.Response()
-            CreateRefFrame_Req.obj_name = req['obj_name']
-            CreateRefFrame_Req.parent_frame = req['spawning_frame']
-            CreateRefFrame_Req.cad_data = req['cad_data']
-            self.logger.info("test 1_positive")
-            self.spawn_object_callback(CreateRefFrame_Req,CreateRefFrame_Res)
-            self.logger.info("test 2_positive")
+            SpawnObject_Req = SpawnObject.Request()
+            SpawnObject_Res = SpawnObject.Response()
+            SpawnObject_Req.obj_name = req['obj_name']
+            SpawnObject_Req.parent_frame = req['spawning_frame']
+            SpawnObject_Req.cad_data = req['cad_data']
+            try:
+                SpawnObject_Req.translation.x = 0.0
+                SpawnObject_Req.translation.y = 0.0
+                SpawnObject_Req.translation.z = 0.0
+                SpawnObject_Req.rotation.w = 1.0
+                SpawnObject_Req.rotation.x = 0.0
+                SpawnObject_Req.rotation.y = 0.0
+                SpawnObject_Req.rotation.z = 0.0
+            except:
+                self.logger.info('translation and rotation not specified in dictionary')
+                SpawnObject_Req.translation.x = 0.0
+                SpawnObject_Req.translation.y = 0.0
+                SpawnObject_Req.translation.z = 0.0
+                SpawnObject_Req.rotation.w = 1.0
+                SpawnObject_Req.rotation.x = 0.0
+                SpawnObject_Req.rotation.y = 0.0
+                SpawnObject_Req.rotation.z = 0.0
+
+            success = self.spawn_object_function(SpawnObject_Req)
+            self.logger.warn(str(success))
+            SpawnObject_Res.success = success
         
         for req in ref_frames_to_spawn:
 
