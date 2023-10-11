@@ -8,11 +8,33 @@ from geometry_msgs.msg import Pose
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster, StaticTransformBroadcaster
 from spawn_object_interfaces.srv import DestroyObject
 from spawn_object_interfaces.srv import SpawnObject
+from spawn_object_interfaces.srv import SpawnFromDict
 from spawn_object_interfaces.msg import ObjectMsg
+from spawn_object_interfaces.srv import CreateRefFrame
+
 from threading import Event
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from threading import Thread
+import os
+import json
+import ast
+from functools import partial
+
+class InvalidInputDict(Exception):
+    pass
+
+def findkeys(node, kv):
+    if isinstance(node, list):
+        for i in node:
+            for x in findkeys(i, kv):
+               yield x
+    elif isinstance(node, dict):
+        if kv in node:
+            yield node[kv]
+        for j in node.values():
+            for x in findkeys(j, kv):
+                yield x
 
 class TFPublisherNode(Node):
     def __init__(self):
@@ -33,6 +55,10 @@ class TFPublisherNode(Node):
 
         self.moveit_object_spawner_client = self.create_client(SpawnObject,'moveit_object_handler/spawn_object',callback_group=self.callback_group) 
         self.moveit_object_destroyer_client = self.create_client(DestroyObject,'moveit_object_handler/destroy_object',callback_group=self.callback_group)    
+
+        # Service for Spawning from Dictionary
+        self.object_spawn_from_dict = self.create_service(SpawnFromDict,'object_manager/spawn_from_dict',self.spawn_from_dict,callback_group=self.callback_group)
+        self.create_ref_frame_client = self.create_client(CreateRefFrame,'object_manager/create_ref_frame',callback_group=self.callback_group) 
 
         self.logger = self.get_logger()
 
@@ -121,57 +147,155 @@ class TFPublisherNode(Node):
         response.success = object_publish_success and moveit_spawner_success
         return response
 
-    # def spawn_object_callback(self, request :SpawnObject.Request, response :SpawnObject.Response):
 
-    #     self.logger.info('Spawn Object Service received!')
+    def spawn_from_dict(self, request :SpawnFromDict.Request, response :SpawnFromDict.Response):
+        dictionarys_to_spawn = self.process_input_dict(request.dict)
+        objects_to_spawn, ref_frames_to_spawn= self.convert_dict_list_to_msg_list(dictionarys_to_spawn)
+
+        for req in objects_to_spawn:
+
+            CreateRefFrame_Req = SpawnObject.Request()
+            CreateRefFrame_Res = SpawnObject.Response()
+            CreateRefFrame_Req.obj_name = req['obj_name']
+            CreateRefFrame_Req.parent_frame = req['spawning_frame']
+            CreateRefFrame_Req.cad_data = req['cad_data']
+            self.logger.info("test 1_positive")
+            self.spawn_object_callback(CreateRefFrame_Req,CreateRefFrame_Res)
+            self.logger.info("test 2_positive")
         
-    #     object_publish_executed =  None
-    #     moveit_spawner_executed =  None
-    #     request_forwarding = SpawnObject.Request()
-    #     request_forwarding.obj_name         = request.obj_name 
-    #     request_forwarding.parent_frame     = request.parent_frame 
-    #     request_forwarding.translation      = request.translation 
-    #     request_forwarding.rotation         = request.rotation
-    #     request_forwarding.cad_data         = request.cad_data
+        for req in ref_frames_to_spawn:
 
-    #     self.service_done_event.clear()
-    #     event = Event()
+            CreateRefFrame_Req = CreateRefFrame.Request()
+            CreateRefFrame_Req.frame_name = req['frame_name']
+            CreateRefFrame_Req.parent_frame = req['parent_frame']
+            CreateRefFrame_Req.pose.position.x = req['pose']['x']
+            CreateRefFrame_Req.pose.position.y = req['pose']['y']
+            CreateRefFrame_Req.pose.position.z = req['pose']['z']
+            CreateRefFrame_Req.pose.orientation.w= req['pose']['qw']
+            CreateRefFrame_Req.pose.orientation.x= req['pose']['qw']
+            CreateRefFrame_Req.pose.orientation.y= req['pose']['qw']
+            CreateRefFrame_Req.pose.orientation.z= req['pose']['qw']
+            
+            if not self.create_ref_frame_client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().error('Create Reference Frame Service not available')
+                response.success = False
+                return response
+            
+            future = self.create_ref_frame_client.call_async(CreateRefFrame_Req)
+            future.add_done_callback(partial(self.callback_set))
 
-    #     def done_callback(future):
-    #         nonlocal event
-    #         event.set()
+        response.success = True
 
-    #     if not self.object_topic_publisher_client_spawn.wait_for_service(timeout_sec=2.0):
-    #         self.logger.info('Spawn Service not available')
-    #         object_publish_executed =  False
+        return response
         
-    #     if object_publish_executed is None:
-    #         # Spawning part in topic publisher
-    #         future = self.object_topic_publisher_client_spawn.call_async(request_forwarding)
-    #         future.add_done_callback(done_callback)
-    #         event.wait()
+    def process_input_dict(self,input_data: str) -> list[dict]:
+        try:
+            if not input_data:
+                return []
+                
+            if os.path.isfile(input_data):
+                try:
+                    with open(input_data, 'r') as f:
+                        input_data = json.load(f)
+                    self.logger.info("json file read successfully!")
+                except:
+                    self.logger.error("json file could not be read! Syntax error in given file!")
+                    raise InvalidInputDict
+            
+            if isinstance(input_data,str):
+                input_data = ast.literal_eval(input_data)
 
-    #         object_publish_executed = future.result().success 
-    #         #response.success = True
+            if isinstance(input_data, dict):
+                input_data = [input_data]  # Convert a dictionary to a list containing that dictionary
 
-    #     self.logger.info(object_publish_executed)
+            if not isinstance(input_data, list):
+                raise InvalidInputDict ("Input is not a list or dictionary")
+            
+            self.logger.info("Dictionary processed successfully!")
+            return input_data
+        
+        except InvalidInputDict as t:
+            self.logger.error("Spawning dictionary aborted! Error (1) in Dict Input!")
+            self.logger.error(t)
+            return []
+        except BaseException as e:
+            #print(str(e))
+            self.logger.error("Error (2) in dict input! Opening file failed or conversiion to dict/list failed!")
+            return []
 
-    #     # self.service_done_event.clear()
-    #     # # spawning part in moveit
-    #     # if object_publish_executed:
-    #     #     event = Event()
-    #     #     if not self.moveit_object_spawner_client.wait_for_service(timeout_sec=2.0):
-    #     #         self.logger.info('Spawn Service not available')
-    #     #         moveit_spawner_executed =  False
+    def convert_dict_list_to_msg_list(self, list_data: list[dict]):
+        objects_to_spawn_msg_list = []
 
-    #     #     future = self.moveit_object_spawner_client.call_async(request_forwarding)
-    #     #     future.add_done_callback(done_callback)
-    #     #     event.wait()
-    #     #     moveit_spawner_executed = future.result().success 
+        ref_frames_to_spawn_msg_list = []
 
-    #     # response.success = object_publish_executed and moveit_spawner_executed
+        # it is assumed if the input is not a list that the input is not valid
+        # If an error accures in the previous function the p. function will not return a list
+        if not isinstance(list_data, list):
+            return [],[]
+        
+        try:
+            for index, entry in enumerate(list_data):
+                object_name = None
+                # Processing objects
+                try:
+                    new_object={'obj_name': entry['Spawn']['object_name'],
+                                        'spawning_frame':entry['Spawn']['spawning_frame'],
+                                        'cad_data':entry['Spawn']['cad_data']
+                                        }
+                    objects_to_spawn_msg_list.append(new_object)
 
-    #     return response
+                    object_name = entry['Spawn']['object_name']
+                except:
+                    self.logger.info("Dict only contains ref_frames or error in spawn object definition!")
+                
+                # Processing ref_frames 
+                ref_frames = list(findkeys(entry,'ref_frames'))
+
+                if len(ref_frames):
+                    for frame in ref_frames[0].items():    
+                        key,value = frame
+
+                        # Check if parent frame is given for ref_frame
+                        try:
+                            ref_frame_parent = value['parent_frame']
+                        except:
+                            if object_name is None:
+                                self.logger.error("Ref_frame is missing a parent frame!")
+                                raise Exception
+                            self.logger.info("Parent frame for ref frame not given, assuming object as parent")
+                            ref_frame_parent = object_name
+
+                        new_ref_frame={'frame_name': key,
+                                                'parent_frame': ref_frame_parent,
+                                                'pose':{
+                                                    'x':float(value['pose']['x']),
+                                                    'y':float(value['pose']['y']),
+                                                    'z':float(value['pose']['z']),
+                                                    'qw':float(value['pose']['qw']),
+                                                    'qx':float(value['pose']['qx']),
+                                                    'qy':float(value['pose']['qy']),
+                                                    'qz':float(value['pose']['qz'])}
+                                                }
+                        
+                        ref_frames_to_spawn_msg_list.append(new_ref_frame)
+            
+            self.logger.info('blabla')
+            return objects_to_spawn_msg_list, ref_frames_to_spawn_msg_list
+    
+        except Exception as e:
+            self.logger.error(e)
+            self.logger.error("Error occured! Error in syntax for ref frames!")
+
+
+    def callback_set(self,future):
+        try:
+            response = future.result()
+            self.get_logger().info("Service call successfull.")
+        except Exception as e:
+            self.get_logger().error("error")
+
+
+
 
 
 def main(args=None):
