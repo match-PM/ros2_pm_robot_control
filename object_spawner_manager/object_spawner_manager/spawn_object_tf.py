@@ -29,7 +29,7 @@ def quaternion_multiply(q0:Quaternion, q1:Quaternion)->Quaternion:
     :param q1: 
 
     Output
-    :return: 
+    :return: Quaternion
 
     """
 
@@ -60,6 +60,38 @@ def quaternion_multiply(q0:Quaternion, q1:Quaternion)->Quaternion:
     result.w = q0q1_w
 
     return result
+
+
+def check_and_return_quaternion(object_to_check,logger=None):
+    """This function checks if a given quaternion is valid. This is the case if x=0, y=0, z=0, w=0. 
+    In this case the function will set the quaterion to x=0, y=0, z=0, w=1.
+    This function accepts quaternions as well as poses as input. According to its input the equivaltent type is returned. """
+
+    if isinstance(object_to_check,Quaternion):
+        tmp_q = object_to_check
+    elif isinstance(object_to_check,Pose):
+        tmp_q = object_to_check.orientation
+
+    # This case will probably never happen because the node would crash at some point
+    else:
+        if logger is not None:
+            logger.error("Fatal error")
+        return object_to_check
+    
+    if tmp_q.x==0 and tmp_q.y==0 and tmp_q.z==0 and tmp_q.w==0:
+        tmp_q.x=0.0
+        tmp_q.y=0.0
+        tmp_q.z=0.0
+        tmp_q.w=1.0
+        if logger is not None:
+            logger.info("Assuming Quaternion: x=0.0, y=0.0, z=0.0, w=1.0!")
+    
+    if isinstance(object_to_check,Quaternion):
+        return tmp_q
+    elif isinstance(object_to_check,Pose):
+        object_to_check.orientation = tmp_q
+        return object_to_check
+
 
 class TFPublisherNode(Node):
     def __init__(self):
@@ -111,7 +143,8 @@ class TFPublisherNode(Node):
         return response
 
     def change_obj_parent_frame(self, request, response):
-
+        '''This function is the callback function for the /ChangeParentFrame Service. It iterates through the objects list, 
+        and in case it finds the valid object it calculates the transformation to a new given parent frame. It then publishes the calculated.'''
         for index, (obj_name, obj_parent_frame, obj_trans, obj_rot) in enumerate(zip(self.object_names_list, self.object_parent_frames_list, self.object_translations_list,self.object_rotations_list)):
 
             if request.obj_name == obj_name:
@@ -122,6 +155,7 @@ class TFPublisherNode(Node):
                         response.success = False
                         return response                       
 
+                    # If the new parent frame exists
                     if self.check_frame_exists(request.parent_frame):
                         new_trans, new_rot = self.adapt_tf_for_new_parent_frame(child_frame=obj_name,new_parent_frame=request.parent_frame)
                         self.object_translations_list[index] = new_trans
@@ -142,7 +176,8 @@ class TFPublisherNode(Node):
                 return response
 
     def create_ref_frame(self, request:CreateRefFrame.Request, response:CreateRefFrame.Response):
-
+        """This is the callback function for the /CreateRefFrame service. If the TF Frame does not exist, the function creates a new TF Frame. 
+        If the frame already exists, the inforamtion will be updated!"""
         frame_existend = self.check_frame_exists(request.frame_name)
 
         name_conflict = self.check_object_exists(request.frame_name)
@@ -152,56 +187,41 @@ class TFPublisherNode(Node):
             response.success = False
             return response
 
+        # if the ref frame does not exist yet
         if not frame_existend:
             parent_frame_exists = self.check_frame_exists(request.parent_frame)
 
             if parent_frame_exists:
                 frame_name=request.frame_name
                 frame_parent_name = request.parent_frame
-                pose = request.pose   
+                pose = check_and_return_quaternion(request.pose,self.logger)
 
                 self.ref_frame_names_list.append(request.frame_name)
                 self.ref_frame_parent_names_list.append(request.parent_frame)
-                self.ref_frame_poses_list.append(request.pose)
+                self.ref_frame_poses_list.append(pose)
                 
                 topic_str='Object/'+frame_parent_name+'/'+frame_name
                 self.ref_frame_publisher_list.append(self.create_publisher(RefFrameMsg,topic_str,10))
 
                 self.publsih_topics()
-
-                translation = Vector3()
-                translation.x = pose.position.x
-                translation.y = pose.position.y
-                translation.z = pose.position.z
-                rotation = Quaternion()
-                rotation.x = pose.orientation.x
-                rotation.y = pose.orientation.y
-                rotation.z = pose.orientation.z
-                rotation.w = pose.orientation.w
-
-                self.publish_transform_TF(frame_name,frame_parent_name,translation,rotation)
+                self.publish_transform_TF(frame_name,frame_parent_name,pose.position,pose.orientation)
                 response.success = True
             else:
-                self.logger.warn(f'Parent frame {request.parent_frame} does not exists! Aborted!')
+                self.logger.warn(f'Tried to spawn {request.frame_name}, but parent frame {request.parent_frame} does not exists! Aborted!')
                 response.success = False
 
+        # if the ref frame already exists
         else:
             for index, (frame_name) in enumerate(self.ref_frame_names_list):
                 if request.frame_name == frame_name:
                     self.ref_frame_parent_names_list[index]   = request.parent_frame
-                    self.ref_frame_poses_list[index]       = request.pose
+                    self.ref_frame_poses_list[index]       = check_and_return_quaternion(request.pose,self.logger)
                     self.publsih_topics()
-                    translation = Vector3()
-                    translation.x = self.ref_frame_poses_list[index] .position.x
-                    translation.y = self.ref_frame_poses_list[index] .position.y
-                    translation.z = self.ref_frame_poses_list[index] .position.z
-                    rotation = Quaternion()
-                    rotation.x = self.ref_frame_poses_list[index] .orientation.x
-                    rotation.y = self.ref_frame_poses_list[index] .orientation.y
-                    rotation.z = self.ref_frame_poses_list[index] .orientation.z
-                    rotation.w = self.ref_frame_poses_list[index] .orientation.w
 
-                    self.publish_transform_TF(request.frame_name,self.ref_frame_parent_names_list[index],translation,rotation)
+                    self.publish_transform_TF(request.frame_name,
+                                              self.ref_frame_parent_names_list[index],
+                                              self.ref_frame_poses_list[index].position,
+                                              self.ref_frame_poses_list[index].orientation)
 
                     self.get_logger().warn(f'Service for creating {request.frame_name} was called, but frame does already exist! Information for {request.frame_name} updated!')
                     response.success = True
@@ -212,7 +232,7 @@ class TFPublisherNode(Node):
 
         for index, (ref_frame_name) in enumerate(self.ref_frame_names_list):
             if request.frame_name == ref_frame_name:
-                # destroy TF !!!! A static TF cant be destroyed. Instead it is detached from the world.
+                # destroy TF !!!! A static TF cant be destroyed. Instead it is detached from the world. 'unused_frame
                 t = Vector3()
                 r = Quaternion()
                 t.x=1.0
@@ -268,12 +288,20 @@ class TFPublisherNode(Node):
         return response
 
 
-    def spawn_object_callback(self, request:SpawnObject.Request, response):
-
+    def spawn_object_callback(self, request:SpawnObject.Request, response:SpawnObject.Response):
+        """This method spawns an object. This means that all the relevant object information are stored in a list that contains all the objects. 
+        It then publishes the information as topics and also publishes a Frame in TF"""
         name_conflict = self.check_ref_frame_exists(request.obj_name)
 
         if name_conflict:
             self.get_logger().error(f'Object can not have the same name as an existing reference frame!')
+            response.success = False
+            return response
+
+        parent_frame_exists = self.check_frame_exists(request.parent_frame)
+            
+        if not parent_frame_exists:
+            self.logger.warn(f'Tried to spawn object {request.obj_name}, but parent frame {request.parent_frame} does not exist!')
             response.success = False
             return response
         
@@ -285,14 +313,13 @@ class TFPublisherNode(Node):
             obj_name=request.obj_name
             cad_path=request.cad_data
 
-            translation = request.translation
-            rotation = request.rotation
+            rotation = check_and_return_quaternion(request.rotation,self.logger)
 
             obj_parent_frame = request.parent_frame
 
             self.object_names_list.append(obj_name)
             self.object_cad_paths_list.append(cad_path)
-            self.object_translations_list.append(translation)
+            self.object_translations_list.append(request.translation)
             self.object_rotations_list.append(rotation)
             self.object_parent_frames_list.append(obj_parent_frame)
             
@@ -301,12 +328,7 @@ class TFPublisherNode(Node):
             self.object_subscriptions_list.append(self.create_subscription(ObjectMsg,topic_str,self.update_object_message,10))
 
             self.publsih_topics()
-            frame_exists = self.check_frame_exists(obj_parent_frame)
-            
-            if not frame_exists:
-                self.logger.warn(f'TF for {obj_name} published but parent frame {obj_parent_frame} does not currently exist!')
-
-            self.publish_transform_TF(obj_name,obj_parent_frame,translation,rotation)
+            self.publish_transform_TF(obj_name,obj_parent_frame,request.translation,rotation)
 
             response.success = True
 
@@ -317,9 +339,11 @@ class TFPublisherNode(Node):
                     self.object_parent_frames_list[index]   = request.parent_frame
                     self.object_cad_paths_list[index]       = request.cad_data
                     self.object_translations_list[index]    = request.translation
-                    self.object_rotations_list[index]       = request.rotation
+                    self.object_rotations_list[index]       = check_and_return_quaternion(request.rotation,self.logger)
                     self.get_logger().warn(f'Service for spawning {request.obj_name} was called, but object does already exist!')
                     self.get_logger().warn(f'Information for {request.obj_name} updated!')
+                    self.publsih_topics()
+                    self.publish_transform_TF(obj_name,request.parent_frame,self.object_translations_list[index],self.object_rotations_list[index])
                     response.success = True
 
         return response
@@ -358,15 +382,10 @@ class TFPublisherNode(Node):
             obj_m=ObjectMsg()
             obj_m.obj_name=obj_name
 
+            obj_m.pose.orientation=obj_rot
             obj_m.pose.position.x=float(obj_trans.x)
             obj_m.pose.position.y=float(obj_trans.y)
             obj_m.pose.position.z=float(obj_trans.z)
-
-            obj_m.pose.orientation.x=float(obj_rot.x)
-            obj_m.pose.orientation.y=float(obj_rot.y)
-            obj_m.pose.orientation.z=float(obj_rot.z)
-            obj_m.pose.orientation.w=float(obj_rot.w)
-
 
             obj_m.parent_frame=obj_parent_frame
             obj_m.cad_data=obj_cad_p
@@ -423,7 +442,6 @@ class TFPublisherNode(Node):
         rot.z = t.transform.rotation.z
         rot.w = t.transform.rotation.w
 
-
         return trans, rot
 
 
@@ -478,22 +496,15 @@ class TFPublisherNode(Node):
                 self.ref_frame_poses_list[index].position.y += request.rel_pose.position.y
                 self.ref_frame_poses_list[index].position.z += request.rel_pose.position.z
 
-                self.ref_frame_poses_list[index].orientation = quaternion_multiply(self.ref_frame_poses_list[index].orientation,request.rel_pose.orientation)
+                rel_orientation = check_and_return_quaternion(request.rel_pose.orientation,self.logger)
 
-                translation = Vector3()
-                rotation = Quaternion()
-
-                translation.x = self.ref_frame_poses_list[index].position.x
-                translation.y = self.ref_frame_poses_list[index].position.y
-                translation.z = self.ref_frame_poses_list[index].position.z
-
-                rotation.x = self.ref_frame_poses_list[index].orientation.x
-                rotation.y = self.ref_frame_poses_list[index].orientation.y
-                rotation.z = self.ref_frame_poses_list[index].orientation.z
-                rotation.w = self.ref_frame_poses_list[index].orientation.w
+                self.ref_frame_poses_list[index].orientation = quaternion_multiply(self.ref_frame_poses_list[index].orientation,rel_orientation)
 
                 self.publsih_topics()
-                self.publish_transform_TF(self.ref_frame_names_list[index],self.ref_frame_parent_names_list[index],translation, rotation)
+                self.publish_transform_TF(self.ref_frame_names_list[index],
+                                          self.ref_frame_parent_names_list[index],
+                                          self.ref_frame_poses_list[index].position, 
+                                          self.ref_frame_poses_list[index].orientation)
                 
                 self.logger.info(f'Pose for frame {request.frame_name} updated!')
                 response.success = True
@@ -502,7 +513,8 @@ class TFPublisherNode(Node):
         self.logger.warn("Pose could not be updated. Frame not found!")
         response.success = False
         return response
-        
+    
+
     
 def main(args=None):
     rclpy.init(args=args)

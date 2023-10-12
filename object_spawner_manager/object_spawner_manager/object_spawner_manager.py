@@ -141,8 +141,8 @@ class TFPublisherNode(Node):
         self.logger.info('Spawn Object Service received!')
         object_publish_executed =  None
         moveit_spawner_executed =  None
-
-        self.logger.warn("SO_Check 1")
+        object_publish_success = False
+        moveit_spawner_success = False
 
         if not self.object_topic_publisher_client_spawn.wait_for_service(timeout_sec=2.0):
             self.logger.info('Spawn Service not available')
@@ -157,8 +157,6 @@ class TFPublisherNode(Node):
             object_publish_success=result.success
             #object_publish_executed = bool (result.success)
 
-        self.logger.warn("SO_Check 2")
-
         # spawning part in moveit
         if object_publish_success:
             if not self.moveit_object_spawner_client.wait_for_service(timeout_sec=2.0):
@@ -170,8 +168,6 @@ class TFPublisherNode(Node):
                 result = self.moveit_object_spawner_client.call(SpwnRequest)
                 moveit_spawner_success = result.success
 
-        self.logger.warn("SO_Check 3")
-
         # Destroy object from publisher if spawn in moveit failed
         if not moveit_spawner_success:
             request_destroy = DestroyObject.Request()
@@ -180,8 +176,6 @@ class TFPublisherNode(Node):
             if (result_destory.success):
                 self.logger.error('Object was spawned in publisher, but failed to spawn in Moveit. Object was deleted from publisher! Service call ignored!')
         
-        self.logger.warn("SO_Check 4")
-        self.logger.warn("SUceess")
         return (object_publish_success and moveit_spawner_success)
 
     def spawn_from_dict(self, request :SpawnFromDict.Request, response :SpawnFromDict.Response):
@@ -270,7 +264,7 @@ class TFPublisherNode(Node):
         
         except InvalidInputDict as t:
             self.logger.error("Spawning dictionary aborted! Error (1) in Dict Input!")
-            self.logger.error(t)
+            self.logger.error(str(t))
             return []
         except BaseException as e:
             #print(str(e))
@@ -333,7 +327,6 @@ class TFPublisherNode(Node):
                         
                         ref_frames_to_spawn_msg_list.append(new_ref_frame)
             
-            self.logger.info('blabla')
             return objects_to_spawn_msg_list, ref_frames_to_spawn_msg_list
     
         except Exception as e:

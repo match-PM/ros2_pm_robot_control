@@ -331,7 +331,6 @@ class MoveitObjectSpawnerNode : public rclcpp::Node
         }
         return true;
 
-
       }catch(const std::exception& ex){
         return false;
       }
