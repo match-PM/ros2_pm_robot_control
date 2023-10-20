@@ -432,10 +432,10 @@ ros2 service call /pm_moveit_server/move_laser_to_frame pm_moveit_interfaces/srv
 #include "std_msgs/msg/string.hpp"
 #include <tf2_msgs/msg/tf_message.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-
 #include "tf2/exceptions.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
+#include <moveit_visual_tools/moveit_visual_tools.h>
 
 #include "pm_moveit_interfaces/srv/execute_plan.hpp"
 #include "pm_moveit_interfaces/srv/move_cam1_tcp_to.hpp"
@@ -452,6 +452,8 @@ using std::placeholders::_1;
 std::shared_ptr<moveit::planning_interface::MoveGroupInterface> laser_move_group;
 std::shared_ptr<moveit::planning_interface::MoveGroupInterface> Cam1_move_group;
 std::shared_ptr<moveit::planning_interface::MoveGroupInterface> tool_move_group;
+
+std::shared_ptr<moveit_visual_tools::MoveItVisualTools> laser_grp_visual_tools;
 
 std::shared_ptr<robot_model_loader::RobotModelLoader> PM_Robot_Model_Loader;
 moveit::planning_interface::MoveGroupInterface::Plan plan;
@@ -474,6 +476,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> myfunction(std::
                                                                            bool execute)
 {
 
+  
   std::string endeffector = move_group->getEndEffectorLink();
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Endeffector Link: %s", endeffector.c_str());
 
@@ -748,6 +751,17 @@ int main(int argc, char **argv)
   laser_move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(pm_moveit_server_node, "PM_Robot_Laser_TCP");
   tool_move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(pm_moveit_server_node, "PM_Robot_Tool_TCP");
   Cam1_move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(pm_moveit_server_node, "PM_Robot_Cam1_TCP");
+  
+  //auto psm = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>("robot_description");
+  //psm->startSceneMonitor("/move_group/monitored_planning_scene");
+  const std::string tests="world";
+  auto test = moveit_visual_tools::MoveItVisualTools(pm_moveit_server_node, "world", rviz_visual_tools::RVIZ_MARKER_TOPIC,laser_move_group->getRobotModel());
+
+  //laser_grp_visual_tools = std::make_shared<moveit_visual_tools::MoveItVisualTools>(pm_moveit_server_node,"world", rviz_visual_tools::RVIZ_MARKER_TOPIC,laser_move_group->getRobotModel());
+  //auto test = moveit_visual_tools::MoveItVisualTools::MoveItVisualTools("/world", rviz_visual_tools::RVIZ_MARKER_TOPIC);
+  //auto test = moveit_visual_tools::MoveItVisualTools(pm_moveit_server_node);
+
+  //laser_grp_visual_tools = std::make_shared<moveit_visual_tools::MoveItVisualTools>(psm);
 
   PM_Robot_Model_Loader = std::make_shared<robot_model_loader::RobotModelLoader>(pm_moveit_server_node, "robot_description");
 

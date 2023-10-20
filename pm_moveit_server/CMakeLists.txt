@@ -18,6 +18,8 @@ find_package(std_msgs REQUIRED)
 find_package(pm_moveit_interfaces REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(graph_msgs REQUIRED)
+find_package(moveit_visual_tools REQUIRED)
 
 # uncomment the following section in order to fill in further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -33,6 +35,7 @@ include_directories(
   ${shapes_INCLUDE_DIRS}
   ${tf2_INCLUDE_DIRS}
   ${tf2_ros_INCLUDE_DIRS}
+  ${graph_msgs_INCLUDE_DIRS}
   include
 )
 
@@ -47,6 +50,8 @@ ament_target_dependencies(pm_moveit_server
   moveit_msgs
   tf2_ros
   std_msgs
+  graph_msgs
+  moveit_visual_tools
   tf2
   pm_moveit_interfaces
 )

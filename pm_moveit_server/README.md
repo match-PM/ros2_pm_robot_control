@@ -22,6 +22,8 @@ Outputs:
 * `joint_names`: Returns the joint names involved in the movement.
 * `joint_values`: Returns the targed joint values of the planned pose. These are also returned when motion is not executed. 
 
+sudo apt install ros-humble-moveit-visual-tools
+
 
 To-Do's:
 * Rotations are currently not supported. Regardless what is inserted into rotation and pose.orientation the target pose will always have x: 0, y: 0, z: 0, w: 1.

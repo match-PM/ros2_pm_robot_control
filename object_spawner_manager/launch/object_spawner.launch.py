@@ -23,13 +23,13 @@ def generate_launch_description():
 
     # Define Launch Description
     ld = LaunchDescription()
-
+    sim_time = True
     object_spawner_manager = Node(
         name="object_spawner_id",
         package="object_spawner_manager",
         executable="object_spawner_manager.py",
         #namespace = '',
-        parameters=[{"use_sim_time": False},
+        parameters=[{"use_sim_time": sim_time},
         ],
         emulate_tty=True
     )
@@ -39,7 +39,7 @@ def generate_launch_description():
         package="object_spawner_manager",
         executable="spawn_object_tf.py",
         #namespace = '',
-        parameters=[{"use_sim_time": False},
+        parameters=[{"use_sim_time": sim_time},
         ],
         emulate_tty=True
     )
@@ -48,7 +48,7 @@ def generate_launch_description():
         name="object_spawner_moveit",
         package="object_spawner_manager",
         executable="spawn_object_in_moveit_V",
-        parameters=[{"use_sim_time": False},
+        parameters=[{"use_sim_time": sim_time},
         ],
         emulate_tty=True
     )
