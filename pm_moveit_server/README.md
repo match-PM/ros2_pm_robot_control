@@ -1,5 +1,11 @@
 # pm_moveit_server
 
+Install
+
+sudo apt install ros-humble-moveit-visual-tools
+
+sudo apt install ros-humble-graph-msgs
+
 The purpose of the pm_moveit_server is to offer services to move pre-defined end-effectors to a given frame (TF). In order to do so, the moviet_server offers different services:
 
 * `MoveCam1TcpTo.srv`: Commands the control, to move the frame "Cam1_Toolhead_TCP" to the given frame.
@@ -22,7 +28,6 @@ Outputs:
 * `joint_names`: Returns the joint names involved in the movement.
 * `joint_values`: Returns the targed joint values of the planned pose. These are also returned when motion is not executed. 
 
-sudo apt install ros-humble-moveit-visual-tools
 
 
 To-Do's:
