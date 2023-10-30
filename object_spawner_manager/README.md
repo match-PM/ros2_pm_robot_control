@@ -12,6 +12,8 @@ When launching the object spawner manager the following nodes are run:
 * ` object_publisher`: In this node all active objects and active reference frames are registered. All information are published in the namespace “/objects/OBJECT_ID” (or “/objects/_REF_FRAME_ID”) using the message types described in “4. Messages”. The node provides multiple services to modify or interact with active objects and reference frames. All changes are then published to the "tf_static" topic so that other nodes (e.a. object_spawner_moveit or Rviz”) are updated. In this node, validity checking of a service call is performed (e.a. to prevent naming conflicts or invalid transformations). For more details regarding services provided by this node see fig. X.
 * ` object_spawner_moveit`: This node serves as the interface to the planning_scene_interface, with which objects can be spawned in the planning_scene and thus in Rviz2. The objects are then also considered for collision detection. This node subscribes to the “tf_static” topic and thus updates objects pose information automatically, when a change in the object_publisher occurs. Spawning or destroying objects is called from the object_spawner_manger and is only initiated if spawning and destroying an object in the object_publisher is successful. 
 
+![Image - Concept of the Object Spawner Manager](https://github.com/match-PM/ros2_pm_robot_control/blob/main/object_spawner_manager/2023_10_30_Concept_of_object_spawner_manager.png)
+
 ## 3. Installation & Launch
 To be able to execute the objtect_spawner_manager, you need to follow the process for installation described on the top level of this repository.
 
