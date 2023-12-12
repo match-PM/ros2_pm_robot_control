@@ -10,8 +10,12 @@ from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallb
 
 from spawn_object_interfaces.srv import DestroyObject
 from spawn_object_interfaces.srv import SpawnObject
-from spawn_object_interfaces.msg import ObjectMsg
-from spawn_object_interfaces.msg import RefFrameMsg
+from spawn_object_interfaces.msg import Object
+from spawn_object_interfaces.msg import RefFrame
+
+import spawn_object_interfaces.msg as soi_msgs
+
+import spawn_object_interfaces.srv as soi_srvs
 
 from spawn_object_interfaces.srv import ChangeParentFrame
 from spawn_object_interfaces.srv import CreateRefFrame
@@ -92,6 +96,47 @@ def check_and_return_quaternion(object_to_check,logger=None):
         object_to_check.orientation = tmp_q
         return object_to_check
 
+def adapt_transform_for_new_parent_frame(child_frame, new_parent_frame, tf_buffer: Buffer):
+    # this function adapts the tf for parent_frame changes
+    t = tf_buffer.lookup_transform(child_frame, new_parent_frame,rclpy.time.Time())
+    trans = Vector3()
+    rot = Quaternion()
+    trans.x = -t.transform.translation.x
+    trans.y = -t.transform.translation.y
+    trans.z = -t.transform.translation.z
+
+    rot.x = t.transform.rotation.x
+    rot.y = t.transform.rotation.y
+    rot.z = t.transform.rotation.z
+    rot.w = t.transform.rotation.w
+
+    return trans, rot
+
+def publish_transform_tf_static(node: Node, 
+                                tf_broadcaster:StaticTransformBroadcaster, 
+                                child_frame:str, 
+                                parent_frame:str, 
+                                translation:Vector3, 
+                                rotations:Quaternion):
+    # Create a static transform
+    transform_stamped = TransformStamped()
+    transform_stamped.header.stamp = node.get_clock().now().to_msg()  # Use current timestamp
+    transform_stamped.header.frame_id = parent_frame
+    transform_stamped.child_frame_id = child_frame
+
+    # # Set the translation
+    transform_stamped.transform.translation.x = float(translation.x)
+    transform_stamped.transform.translation.y = float(translation.y)
+    transform_stamped.transform.translation.z = float(translation.z)
+
+    # Set the rotation (quaternion)
+    transform_stamped.transform.rotation.x = float(rotations.x)
+    transform_stamped.transform.rotation.y = float(rotations.y)
+    transform_stamped.transform.rotation.z = float(rotations.z)
+    transform_stamped.transform.rotation.w = float(rotations.w)
+
+    # Publish the static transform
+    tf_broadcaster.sendTransform(transform_stamped)
 
 class TFPublisherNode(Node):
     def __init__(self):
@@ -99,256 +144,347 @@ class TFPublisherNode(Node):
 
         self.callback_group = MutuallyExclusiveCallbackGroup()
 
-        self.spawn_object_srv = self.create_service(SpawnObject,'object_publisher/spawn_object',self.spawn_object_callback,callback_group=self.callback_group)
-        self.destroy_object_srv = self.create_service(DestroyObject,'object_publisher/destroy_object',self.destroy_object_callback,callback_group=self.callback_group)
+        self.object_scene = ObjScene(self)
 
-        self.create_ref_frame_srv = self.create_service(CreateRefFrame,'object_manager/create_ref_frame',self.create_ref_frame,callback_group=self.callback_group)
-        self.delete_ref_frame_srv = self.create_service(DeleteRefFrame,'object_manager/delete_ref_frame',self.delete_ref_frame,callback_group=self.callback_group)  
+        self.spawn_object_srv = self.create_service(SpawnObject,f'object_spawner_publisher/spawn_object',self.spawn_object_callback,callback_group=self.callback_group)
+        self.destroy_object_srv = self.create_service(DestroyObject,f'object_spawner_publisher/destroy_object',self.destroy_object_callback,callback_group=self.callback_group)
 
-        self.change_parent_frame_srv = self.create_service(ChangeParentFrame,'object_manager/change_obj_parent_frame',self.change_obj_parent_frame,callback_group=self.callback_group)  
+        self.create_ref_frame_srv = self.create_service(CreateRefFrame,f'object_spawner_manager/create_ref_frame',self.create_ref_frame,callback_group=self.callback_group)
+        self.delete_ref_frame_srv = self.create_service(DeleteRefFrame,f'object_spawner_manager/delete_ref_frame',self.destroy_ref_frame,callback_group=self.callback_group)  
+
+        self.change_parent_frame_srv = self.create_service(ChangeParentFrame,f'object_spawner_manager/change_obj_parent_frame',self.change_obj_parent_frame,callback_group=self.callback_group)  
         
-        self.change_parent_frame_srv = self.create_service(ModifyPose,'object_manager/modify_pose',self.modify_pose,callback_group=self.callback_group)  
+        self.change_parent_frame_srv = self.create_service(ModifyPose,'object_spawner_manager/modify_pose',self.modify_pose,callback_group=self.callback_group)  
 
-        self.get_info_srv = self.create_service(GetInfo,'object_manager/get_info',self.get_info,callback_group=self.callback_group)
+        self.get_info_srv = self.create_service(soi_srvs.GetScene,f'object_spawner_manager/get_scene',self.get_scene,callback_group=self.callback_group)      
 
-        self.tf_broadcaster = StaticTransformBroadcaster(self)
-        self.logger = self.get_logger()
+        self.create_ref_plane_srv = self.create_service(soi_srvs.CreateRefPlane,f'object_spawner_manager/create_ref_plane',self.create_ref_plane,callback_group=self.callback_group)      
 
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-        
-        self.timer_ = self.create_timer(5.0, self.publsih_topics,callback_group=self.callback_group)
-
-        self.object_names_list=[]
-        self.object_parent_frames_list=[]
-        self.object_cad_paths_list=[]
-        self.object_translations_list=[]
-        self.object_rotations_list=[]
-
-        self.object_subscriptions_list=[]
-        self.object_publisher_list=[]
-
-        self.ref_frame_names_list = []
-        self.ref_frame_parent_names_list = []
-        self.ref_frame_poses_list = []
-        self.ref_frame_publisher_list = []
-
-        self.logger.info("Object Topic publisher started!")
-
-    def get_info(self, request, response):
-
-        response.obj_names = self.object_names_list
-        response.ref_frame_names = self.ref_frame_names_list
-
+        self.timer = self.create_timer(5.0, self.object_scene.publish_information,callback_group=self.callback_group)
+       
+        self.get_logger().info("Object Topic publisher started!")
+    
+    def get_scene(self, request :soi_srvs.GetScene.Request, response:soi_srvs.GetScene.Response):
+        response.scene = self.object_scene.scene
+        response.success = True
         return response
 
-    def change_obj_parent_frame(self, request, response):
+    def change_obj_parent_frame(self, request:soi_srvs.ChangeParentFrame.Request, response:soi_srvs.ChangeParentFrame.Response):
         '''This function is the callback function for the /ChangeParentFrame Service. It iterates through the objects list, 
         and in case it finds the valid object it calculates the transformation to a new given parent frame. It then publishes the calculated.'''
-        for index, (obj_name, obj_parent_frame, obj_trans, obj_rot) in enumerate(zip(self.object_names_list, self.object_parent_frames_list, self.object_translations_list,self.object_rotations_list)):
-
-            if request.obj_name == obj_name:
-                if self.object_parent_frames_list[index] != request.parent_frame:
-
-                    if obj_name == request.parent_frame:
-                        self.logger.error(f'Parent and child frame can not be the same! parent_frame = child_frame ')
-                        response.success = False
-                        return response                       
-
-                    # If the new parent frame exists
-                    if self.check_frame_exists(request.parent_frame):
-                        new_trans, new_rot = self.adapt_tf_for_new_parent_frame(child_frame=obj_name,new_parent_frame=request.parent_frame)
-                        self.object_translations_list[index] = new_trans
-                        self.object_rotations_list[index] = new_rot
-                        self.object_parent_frames_list[index] = request.parent_frame
-                        self.logger.info(f'Parent Frame updated!') 
-                        self.publish_transform_TF(obj_name,self.object_parent_frames_list[index],self.object_translations_list[index],self.object_rotations_list[index])
-                        self.publsih_topics()
-                        response.success = True
-                        return response
-                    else:
-                        self.logger.warn(f'Attemd to change parent frame of {obj_name} but frame {request.parent_frame} does not exist! No change to TF executed!')
-                        response.success = False
-                        return response
-                
-                self.logger.warn(f'Parent frame is already set!')
-                response.success = True
-                return response
+        change_success = self.object_scene.change_obj_parent_frame(     obj_id=request.obj_name,
+                                                                        new_parent_frame=request.new_parent_frame)
+        response.success = change_success
+        return response
 
     def create_ref_frame(self, request:CreateRefFrame.Request, response:CreateRefFrame.Response):
         """This is the callback function for the /CreateRefFrame service. If the TF Frame does not exist, the function creates a new TF Frame. 
         If the frame already exists, the inforamtion will be updated!"""
-        frame_existend = self.check_frame_exists(request.frame_name)
-
-        name_conflict = self.check_object_exists(request.frame_name)
-
-        if name_conflict:
-            self.get_logger().error(f'Frame can not have the same name as an existing object!')
-            response.success = False
-            return response
-
-        # if the ref frame does not exist yet
-        if not frame_existend:
-            parent_frame_exists = self.check_frame_exists(request.parent_frame)
-
-            if parent_frame_exists:
-                frame_name=request.frame_name
-                frame_parent_name = request.parent_frame
-                pose = check_and_return_quaternion(request.pose,self.logger)
-
-                self.ref_frame_names_list.append(request.frame_name)
-                self.ref_frame_parent_names_list.append(request.parent_frame)
-                self.ref_frame_poses_list.append(pose)
-                
-                topic_str='Object/'+frame_parent_name+'/'+frame_name
-                self.ref_frame_publisher_list.append(self.create_publisher(RefFrameMsg,topic_str,10))
-
-                self.publsih_topics()
-                self.publish_transform_TF(frame_name,frame_parent_name,pose.position,pose.orientation)
-                response.success = True
-            else:
-                self.logger.warn(f'Tried to spawn {request.frame_name}, but parent frame {request.parent_frame} does not exists! Aborted!')
-                response.success = False
-
-        # if the ref frame already exists
-        else:
-            for index, (frame_name) in enumerate(self.ref_frame_names_list):
-                if request.frame_name == frame_name:
-                    self.ref_frame_parent_names_list[index]   = request.parent_frame
-                    self.ref_frame_poses_list[index]       = check_and_return_quaternion(request.pose,self.logger)
-                    self.publsih_topics()
-
-                    self.publish_transform_TF(request.frame_name,
-                                              self.ref_frame_parent_names_list[index],
-                                              self.ref_frame_poses_list[index].position,
-                                              self.ref_frame_poses_list[index].orientation)
-
-                    self.get_logger().warn(f'Service for creating {request.frame_name} was called, but frame does already exist! Information for {request.frame_name} updated!')
-                    response.success = True
-
-        return response
-
-    def delete_ref_frame(self, request, response):
-
-        for index, (ref_frame_name) in enumerate(self.ref_frame_names_list):
-            if request.frame_name == ref_frame_name:
-                # destroy TF !!!! A static TF cant be destroyed. Instead it is detached from the world. 'unused_frame
-                t = Vector3()
-                r = Quaternion()
-                t.x=1.0
-                t.y=1.0
-                t.z=1.0
-
-                r.x=0.0
-                r.y=0.0
-                r.z=0.0
-                r.w=1.0
-                self.publish_transform_TF(self.ref_frame_names_list[index],'unused_frame', t, r)
-                
-                del self.ref_frame_names_list[index]
-                del self.ref_frame_parent_names_list[index]
-                del self.ref_frame_poses_list[index]
-
-                self.destroy_publisher(self.ref_frame_publisher_list[index])
-
-                del self.ref_frame_publisher_list[index]
-                self.logger.info(f'Frame {ref_frame_name} destroyed!!!')
-                self.publsih_topics()
-                response.success = True
-                return response
-            
-        self.get_logger().warn(f'Frame {request.frame_name} could not be deleted! Frame not found!')
-        return response
         
+        add_success = self.object_scene.add_ref_frame_to_scene(request.ref_frame)
+        response.success = add_success
 
-    def destroy_object_callback(self, request, response):
-        response.success = False
-
-        for index, (obj_name) in enumerate(self.object_names_list):
-            if request.obj_name == obj_name:
-                # destroy TF !!!! A static TF cant be destroyed. Instead it is detached from the world.
-                self.publish_transform_TF(self.object_names_list[index],'unused_frame',self.object_translations_list[index],self.object_rotations_list[index])
-                
-                del self.object_names_list[index]
-                del self.object_parent_frames_list[index]
-                del self.object_cad_paths_list[index]
-                del self.object_translations_list[index]
-                del self.object_rotations_list[index]
-                self.destroy_publisher(self.object_publisher_list[index])
-                self.destroy_subscription(self.object_subscriptions_list[index])
-                del self.object_publisher_list[index]
-                del self.object_subscriptions_list[index]
-
-                self.publsih_topics()
-                self.logger.info(f'{obj_name} destroyed!!!')
-                response.success = True
-                return response
-            
-        self.logger.error(f'Tried to destroy {request.obj_name}, but object does not exist!')
         return response
 
+    def create_ref_plane(self,request:soi_srvs.CreateRefPlane.Request, response:soi_srvs.CreateRefPlane.Response):
+        self.get_logger().warn("Starting call")
+        create_success = self.object_scene.create_ref_plane(plane = request.ref_plane)
+        response.success = create_success
+        return response
+
+    def destroy_ref_frame(self, request:DeleteRefFrame.Request, response:DeleteRefFrame.Response):
+        """This is the callback function for the /CreateRefFrame service. If the TF Frame does not exist, the function creates a new TF Frame. 
+        If the frame already exists, the inforamtion will be updated!"""
+        
+        add_success = self.object_scene.destroy_ref_frame(frame_id = request.frame_name)
+        response.success = add_success
+
+        return response   
 
     def spawn_object_callback(self, request:SpawnObject.Request, response:SpawnObject.Response):
         """This method spawns an object. This means that all the relevant object information are stored in a list that contains all the objects. 
         It then publishes the information as topics and also publishes a Frame in TF"""
-        name_conflict = self.check_ref_frame_exists(request.obj_name)
+        new_obj = soi_msgs.Object()
+        new_obj.cad_data = request.cad_data
+        new_obj.obj_name = request.obj_name
+        new_obj.parent_frame = request.parent_frame
+        new_obj.obj_pose.orientation = request.rotation
+        new_obj.obj_pose.position.x = request.translation.x
+        new_obj.obj_pose.position.y = request.translation.y
+        new_obj.obj_pose.position.z = request.translation.z
+
+        add_success = self.object_scene.add_obj_to_scene(new_obj)
+        response.success = add_success
+
+        return response
+    
+    def destroy_object_callback(self, request:soi_srvs.DestroyObject.Request, response:soi_srvs.DestroyObject.Response):
+        del_success = self.object_scene.destroy_object(request.obj_name)
+        response.success = del_success
+        return response
+
+
+    def modify_pose(self, request: ModifyPose.Request, response: ModifyPose.Response):
+        modify_success = self.object_scene.modify_pose(frame_obj_name= request.frame_name,
+                                                       rel_pose = request.rel_pose)
+        response.success = modify_success
+        return response
+    
+
+class ObjScene():
+    UNUSED_FRAME_CONST = 'unused_frame'
+    def __init__(self, node: Node):
+        self.scene = soi_msgs.ObjectScene()
+        self.node = node
+
+        self._scene_publisher = node.create_publisher(soi_msgs.ObjectScene,'/object_spawner_manager/scene',10)
+        self.logger = node.get_logger()
+        self.tf_broadcaster = StaticTransformBroadcaster(node)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, node)
+
+    def publish_information(self):
+        self.publish_scene()
+        self.publish_to_tf()
+
+    def publish_scene(self):
+        self._scene_publisher.publish(self.scene)
+        self.logger.info("Object Scene has been published")
+
+    def add_obj_to_scene(self, new_obj:soi_msgs.Object)-> bool:
+
+        name_conflict = self.check_ref_frame_exists(new_obj.obj_name)
 
         if name_conflict:
-            self.get_logger().error(f'Object can not have the same name as an existing reference frame!')
-            response.success = False
-            return response
+            self.logger.error(f'Object can not have the same name as an existing reference frame!')
+            return False
 
-        parent_frame_exists = self.check_frame_exists(request.parent_frame)
+        parent_frame_exists = self.check_if_frame_exists(new_obj.parent_frame)
             
         if not parent_frame_exists:
-            self.logger.warn(f'Tried to spawn object {request.obj_name}, but parent frame {request.parent_frame} does not exist!')
-            response.success = False
-            return response
-        
-        # Check if object exists in the object list
-        obj_existend = self.check_object_exists(request.obj_name)
+            self.logger.warn(f"Tried to spawn object {new_obj.obj_name}, but parent frame '{new_obj.parent_frame}' does not exist!")
+            return False
 
-        # if not exists create
+        obj_existend = self.check_object_exists(new_obj.obj_name)
+
         if not obj_existend:
-            obj_name=request.obj_name
-            cad_path=request.cad_data
-
-            rotation = check_and_return_quaternion(request.rotation,self.logger)
-
-            obj_parent_frame = request.parent_frame
-
-            self.object_names_list.append(obj_name)
-            self.object_cad_paths_list.append(cad_path)
-            self.object_translations_list.append(request.translation)
-            self.object_rotations_list.append(rotation)
-            self.object_parent_frames_list.append(obj_parent_frame)
-            
-            topic_str='Object/'+obj_name
-            self.object_publisher_list.append(self.create_publisher(ObjectMsg,topic_str,10))
-            self.object_subscriptions_list.append(self.create_subscription(ObjectMsg,topic_str,self.update_object_message,10))
-
-            self.publsih_topics()
-            self.publish_transform_TF(obj_name,obj_parent_frame,request.translation,rotation)
-
-            response.success = True
+            self.scene.objects_in_scene.append(new_obj)
+            self.publish_scene()
+            self.publish_to_tf()
+            return True
 
         # if exists updated values
         else:
-            for index, (obj_name) in enumerate(self.object_names_list):
-                if request.obj_name == obj_name:
-                    self.object_parent_frames_list[index]   = request.parent_frame
-                    self.object_cad_paths_list[index]       = request.cad_data
-                    self.object_translations_list[index]    = request.translation
-                    self.object_rotations_list[index]       = check_and_return_quaternion(request.rotation,self.logger)
-                    self.get_logger().warn(f'Service for spawning {request.obj_name} was called, but object does already exist!')
-                    self.get_logger().warn(f'Information for {request.obj_name} updated!')
-                    self.publsih_topics()
-                    self.publish_transform_TF(obj_name,request.parent_frame,self.object_translations_list[index],self.object_rotations_list[index])
-                    response.success = True
+            for index, obj in enumerate(self.scene.objects_in_scene):
+                obj:soi_msgs.Object
+                if obj.obj_name == new_obj.obj_name:
+                    del self.scene.objects_in_scene[index]
+                    new_obj.obj_pose.orientation = check_and_return_quaternion(new_obj.obj_pose.orientation,self.logger)
+                    self.scene.objects_in_scene.append(new_obj)
 
-        return response
+                    self.logger.warn(f'Service for spawning {new_obj.obj_name} was called, but object does already exist!')
+                    self.logger.warn(f'Information for {new_obj.obj_name} updated!')
+                    self.publish_scene()
+                    self.publish_to_tf()
+                    return True
+            # eventually 
+            return False
 
-    def check_frame_exists(self, frame_id):
+    def add_ref_frame_to_scene(self, new_ref_frame:soi_msgs.RefFrame)-> bool:
+
+        ref_frame_existend = self.check_ref_frame_exists(new_ref_frame.frame_name)
+        
+        name_conflict_1 = self.check_object_exists(new_ref_frame.frame_name)
+        name_conflict_2 = self.check_if_frame_exists(new_ref_frame.frame_name)
+
+        if not ref_frame_existend and (name_conflict_1 or name_conflict_2):
+            self.logger.error(f'Ref frame can not have the same name as an existing reference frame or object!')
+            return False
+
+        parent_frame_exists = self.check_if_frame_exists(new_ref_frame.parent_frame)
+            
+        if not parent_frame_exists:
+            self.logger.warn(f'Tried to spawn ref frame {new_ref_frame.frame_name}, but parent frame {new_ref_frame.parent_frame} does not exist!')
+            return False
+
+        # Check if the new ref frame should be connected to an existing object or not.
+        frame_is_obj_frame = self.check_object_exists(new_ref_frame.parent_frame)
+
+        frame_list_to_append_to = []
+
+        if frame_is_obj_frame:
+            frame_list_to_append_to = self.get_obj_by_name(new_ref_frame.parent_frame).ref_frames
+        else:
+            frame_list_to_append_to = self.scene.ref_frames_in_scene
+
+        if not ref_frame_existend:
+            frame_list_to_append_to.append(new_ref_frame)
+        else:
+            for index, frame in enumerate(frame_list_to_append_to):
+                frame: soi_msgs.RefFrame
+                if frame.frame_name == new_ref_frame.frame_name:
+                    del frame_list_to_append_to[index]
+                    frame_list_to_append_to.append(new_ref_frame)
+                self.logger.warn(f'Service for creating {new_ref_frame.frame_name} was called, but frame does already exist! Information for {new_ref_frame.frame_name} updated!')
+        
+        self.publish_information()
+        return True
+
+    def destroy_object(self, obj_id:str)-> bool:
+        """
+        This method will delete an object from the objects list
+        """
+
+        for index, obj in enumerate(self.scene.objects_in_scene):
+            obj:soi_msgs.Object
+            if obj.obj_name == obj_id:
+                # change the parent frame for the ref frames connected to the object. This is necessary because the ref frame would reapear if a new obj with the same name would be spawned. 
+                for ref_frame in obj.ref_frames:
+                    ref_frame:soi_msgs.RefFrame
+                    ref_frame.parent_frame = self.UNUSED_FRAME_CONST
+                # publish the changes from the ref frames
+                self.publish_information()
+
+                # destroy TF !!!! A static TF cant be destroyed. Instead it is detached from the world.
+                publish_transform_tf_static(node= self.node,
+                                            tf_broadcaster= self.tf_broadcaster,
+                                            child_frame=obj.obj_name,
+                                            parent_frame=self.UNUSED_FRAME_CONST,
+                                            translation=obj.obj_pose.position,
+                                            rotations=obj.obj_pose.orientation)
+                                
+                del self.scene.objects_in_scene[index]
+
+                self.publish_information()
+                self.logger.info(f'{obj_id} destroyed!!!')
+                return True
+            
+        self.logger.error(f'Tried to destroy {obj_id}, but object does not exist!')
+        return False
+    
+    def destroy_ref_frame(self, frame_id:str)-> bool:
+
+        # Check if frame is refevert to an object or not.
+        for index, frame in enumerate(self.scene.ref_frames_in_scene):
+            frame: soi_msgs.RefFrame
+            if frame.frame_name == frame_id:
+                publish_transform_tf_static(node= self.node,
+                                            tf_broadcaster= self.tf_broadcaster,
+                                            child_frame=frame.frame_name,
+                                            parent_frame='unused_frame',
+                                            translation=frame.pose.position,
+                                            rotations=frame.pose.orientation)
+                del self.scene.ref_frames_in_scene[index]
+                self.logger.info(f"Frame '{frame_id}' destroyed!")
+                return True
+            
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            for index, frame in enumerate(obj.ref_frames):
+                frame: soi_msgs.RefFrame
+                if frame.frame_name == frame_id:
+                    publish_transform_tf_static(node= self.node,
+                            tf_broadcaster= self.tf_broadcaster,
+                            child_frame=frame.frame_name,
+                            parent_frame='unused_frame',
+                            translation=frame.pose.position,
+                            rotations=frame.pose.orientation)
+                    del self.scene.ref_frames_in_scene[index]
+                    self.logger.info(f'Frame {frame_id} destroyed!')
+                    return True
+        
+        self.logger().error(f"Frame '{frame_id}' could not be deleted! Frame does not exist!")
+        return False
+ 
+    def get_obj_by_name(self, obj_name:str) -> soi_msgs.Object:
+        """
+        Returns the object from the objects list by the given obj name
+        """
+        for obj in self.scene.objects_in_scene:
+            obj:soi_msgs.Object
+            if obj.obj_name == obj_name:
+                return obj
+        return None
+
+    def change_obj_parent_frame(self, obj_id: str, new_parent_frame:str) -> bool :
+        if obj_id == new_parent_frame:
+            self.logger.error(f'Parent and child frame can not be the same! parent_frame = child_frame ')
+            return False
+        
+        new_parent_frame_exists = self.check_if_frame_exists(new_parent_frame)
+        if not new_parent_frame_exists:
+            self.logger.error(f"The given parent frame '{new_parent_frame}' does not exist! Frame could not be changed!")
+            return False
+        
+        obj_to_change = self.get_obj_by_name(obj_name=obj_id)   # returns not if not found
+
+        # if obj is not None
+        if obj_to_change is not None:
+            if obj_to_change.parent_frame == new_parent_frame:
+                self.logger.warn(f'Parent frame is already set!')
+                return True
+            new_trans, new_rot = adapt_transform_for_new_parent_frame(  child_frame=obj_to_change.obj_name,
+                                                                        new_parent_frame=new_parent_frame,
+                                                                        tf_buffer=self.tf_buffer)
+            obj_to_change.obj_pose.position.x = new_trans.x
+            obj_to_change.obj_pose.position.y = new_trans.y
+            obj_to_change.obj_pose.position.z = new_trans.z
+            obj_to_change.obj_pose.orientation = new_rot
+            obj_to_change.parent_frame = new_parent_frame
+            self.logger.info(f'Parent Frame updated!') 
+            self.publish_information()
+            return True
+        else:
+            self.logger.error(f'Given obj_id is not an existing object!')
+            return False
+            
+    def publish_to_tf(self):
+        # Create a static transform
+        for ref_frame in self.scene.ref_frames_in_scene:
+            transform = TransformStamped()
+            ref_frame:soi_msgs.RefFrame
+            transform.header.stamp = self.node.get_clock().now().to_msg()
+            transform.header.frame_id = ref_frame.parent_frame
+            transform.child_frame_id = ref_frame.frame_name
+            transform.transform.rotation = ref_frame.pose.orientation
+            transform.transform.translation.x=ref_frame.pose.position.x
+            transform.transform.translation.y=ref_frame.pose.position.y
+            transform.transform.translation.z=ref_frame.pose.position.z
+
+            self.tf_broadcaster.sendTransform(transform)
+            self.logger.info(f"TF for '{ref_frame.frame_name}' published!")
+
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            transform_stamped = TransformStamped()
+            transform_stamped.header.stamp = self.node.get_clock().now().to_msg()
+            transform_stamped.child_frame_id = obj.obj_name
+            transform_stamped.header.frame_id = obj.parent_frame
+            transform_stamped.transform.translation.x = obj.obj_pose.position.x
+            transform_stamped.transform.translation.y = obj.obj_pose.position.y
+            transform_stamped.transform.translation.z = obj.obj_pose.position.z
+            transform_stamped.transform.rotation = obj.obj_pose.orientation
+            self.tf_broadcaster.sendTransform(transform_stamped)
+
+            self.logger.info(f"TF for object'{obj.obj_name}' published!")
+
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            for ref_frame in obj.ref_frames:
+                transform = TransformStamped()
+                ref_frame:soi_msgs.RefFrame
+                transform.header.stamp = self.node.get_clock().now().to_msg()
+                transform.header.frame_id = ref_frame.parent_frame
+                transform.child_frame_id = ref_frame.frame_name
+                transform.transform.rotation = ref_frame.pose.orientation
+                transform.transform.translation.x=ref_frame.pose.position.x
+                transform.transform.translation.y=ref_frame.pose.position.y
+                transform.transform.translation.z=ref_frame.pose.position.z
+
+                self.tf_broadcaster.sendTransform(transform)
+                self.logger.info(f"TF for '{ref_frame.frame_name}' published!")
+
+    def check_if_frame_exists(self, frame_id:str) -> bool:
         # This function checks if a tf exists in the tf buffer
         try:
             self.tf_buffer.lookup_transform("world", frame_id, rclpy.time.Time())
@@ -357,164 +493,125 @@ class TFPublisherNode(Node):
             print(e)
             return False
 
-    def check_object_exists(self,name_new_obj):
+    def check_object_exists(self,name_new_obj:str) -> bool:
         # this function checks if an object is in the objects list
-        for obj_name in self.object_names_list:
-            if obj_name == name_new_obj:
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            if obj.obj_name == name_new_obj:
                 return True
         return False
     
-    def check_ref_frame_exists(self,name_new_frame):
+    def check_ref_frame_exists(self,name_new_frame:str) -> bool:
         # this function checks if an frame esixts in the frame list
-        for frame_name in self.ref_frame_names_list:
+        # iterate over ref_frames
+        for frame_name in self.scene.ref_frames_in_scene:
+            frame_name:TransformStamped
             if frame_name == name_new_frame:
                 return True
+        
+        # iterate over objects
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            # iterate over ref_frames in object
+            for ref_frame in obj.ref_frames:
+                ref_frame:soi_msgs.RefFrame
+                if ref_frame.frame_name == name_new_frame:
+                    return True
+
         return False
     
-    def publsih_topics(self):
-        # this function publishes the object and frame messages
-        self.logger.info(f'Publishing topics!') 
-        self.logger.info(f'Registred Objects (total {len(self.object_names_list)}):') 
-        for index, (obj_name) in enumerate(self.object_names_list):
-            self.logger.info(f'{index+1}. {obj_name}')
-        for obj_name, obj_parent_frame, obj_cad_p, obj_trans, obj_rot, obj_pub in zip(self.object_names_list, self.object_parent_frames_list, self.object_cad_paths_list, self.object_translations_list,self.object_rotations_list,self.object_publisher_list):
-          
-            obj_m=ObjectMsg()
-            obj_m.obj_name=obj_name
+    def create_ref_plane(self, plane: soi_msgs.Plane) -> bool:
+        try:
+            if not len(plane.point_names) == 3:
+                self.logger.error(f"Not enough input arguments. Plane could not be created!")
+                return False
+            
+            parent_frame_1 = self.get_parent_frame_for_ref_frame(plane.point_names[0])
+            parent_frame_2 = self.get_parent_frame_for_ref_frame(plane.point_names[1])
+            parent_frame_3 = self.get_parent_frame_for_ref_frame(plane.point_names[2])
 
-            obj_m.pose.orientation=obj_rot
-            obj_m.pose.position.x=float(obj_trans.x)
-            obj_m.pose.position.y=float(obj_trans.y)
-            obj_m.pose.position.z=float(obj_trans.z)
+            if (not (parent_frame_1 == parent_frame_2 == parent_frame_3) or 
+                parent_frame_1 is None or 
+                parent_frame_2 is None or 
+                parent_frame_3 is None):
+                self.logger.error(f"Given frames do not have the same parent frame or ref frame does not exist. Plane could not be created!")
+                return False
 
-            obj_m.parent_frame=obj_parent_frame
-            obj_m.cad_data=obj_cad_p
-            obj_pub.publish(obj_m)
+            list_to_append_plane = []
 
-        # Reference Frames
-        self.logger.info(f'Registred Reference Frames (total {len(self.ref_frame_names_list)}):') 
-        for index, (frame_name) in enumerate(self.ref_frame_names_list):
-            self.logger.info(f'{index+1}. {frame_name}')
+            # try to get parent object of ref frame 
+            obj = self.get_obj_by_name(parent_frame_1)
+            
+            if obj is None:
+                list_to_append_plane = self.scene.planes_in_scene
+            else:
+                list_to_append_plane = obj.ref_planes
 
-        for frame_name, parent_frame, pose, frame_pub in zip(self.ref_frame_names_list, self.ref_frame_parent_names_list, self.ref_frame_poses_list, self.ref_frame_publisher_list):
-            frame_m=RefFrameMsg()
-            frame_m.frame_name=frame_name
-            frame_m.pose=pose
-            frame_m.parent_frame=parent_frame
-            frame_pub.publish(frame_m)
+            for ind, _plane in enumerate(list_to_append_plane):
+                _plane:soi_msgs.Plane
+                if _plane.ref_plane_name == plane.ref_plane_name:
+                    list_to_append_plane[ind] = plane
+                    return True
+            
+            # if above for loop executes without returning append the plane because it does not yet excist.
+            list_to_append_plane.append(plane)
+            self.logger.info(f"Plane '{plane.ref_plane_name}' created! Plane is defined by frames 1.{plane.point_names[0]}, 2.{plane.point_names[1]}, 3.{plane.point_names[2]}.")
+            return True
 
-
-    def update_object_message(self, msg):
-        # This function updates the values of objects if the topic has been changed. 
-        # If an external publisher changes the topic this node updates the object accordingly.
-        # Maybe to delete in the future
-
-        for index, (obj_name, obj_parent_frame, obj_cad_p, obj_trans, obj_rot, obj_pub) in enumerate(zip(self.object_names_list, self.object_parent_frames_list, self.object_cad_paths_list, self.object_translations_list,self.object_rotations_list,self.object_publisher_list)):
-
-            if msg.obj_name == obj_name:
-                self.object_translations_list[index].x = msg.pose.position.x
-                self.object_translations_list[index].y = msg.pose.position.y
-                self.object_translations_list[index].z = msg.pose.position.z
-
-                self.object_rotations_list[index].x = msg.pose.orientation.x
-                self.object_rotations_list[index].y = msg.pose.orientation.y
-                self.object_rotations_list[index].z = msg.pose.orientation.z
-                self.object_rotations_list[index].w = msg.pose.orientation.w
-
-                self.object_parent_frames_list[index] = msg.parent_frame
-                self.object_cad_paths_list[index] = msg.cad_data
-
-                self.publish_transform_TF(self.object_names_list[index],self.object_parent_frames_list[index],self.object_translations_list[index],self.object_rotations_list[index])
-                
-                #self.logger.info(f'Message for {obj_name} updated!') 
-
-    def adapt_tf_for_new_parent_frame(self,child_frame, new_parent_frame):
-        # this function adapts the tf for parent_frame changes
-        t = self.tf_buffer.lookup_transform(child_frame, new_parent_frame,rclpy.time.Time())
-        trans = Vector3()
-        rot = Quaternion()
-        trans.x = -t.transform.translation.x
-        trans.y = -t.transform.translation.y
-        trans.z = -t.transform.translation.z
-
-        rot.x = t.transform.rotation.x
-        rot.y = t.transform.rotation.y
-        rot.z = t.transform.rotation.z
-        rot.w = t.transform.rotation.w
-
-        return trans, rot
-
-
-    def publish_transform_TF(self, child_frame, parent_frame, translation:Vector3, rotations:Quaternion):
-        # Create a static transform
-        transform_stamped = TransformStamped()
-        transform_stamped.header.stamp = self.get_clock().now().to_msg()  # Use current timestamp
-        transform_stamped.header.frame_id = parent_frame
-        transform_stamped.child_frame_id = child_frame
-
-        # # Set the translation
-        transform_stamped.transform.translation.x = float(translation.x)
-        transform_stamped.transform.translation.y = float(translation.y)
-        transform_stamped.transform.translation.z = float(translation.z)
-
-        # Set the rotation (quaternion)
-        transform_stamped.transform.rotation.x = float(rotations.x)
-        transform_stamped.transform.rotation.y = float(rotations.y)
-        transform_stamped.transform.rotation.z = float(rotations.z)
-        transform_stamped.transform.rotation.w = float(rotations.w)
-
-        # Publish the static transform
-        self.tf_broadcaster.sendTransform(transform_stamped)
-        #self.logger.info(f'TF for {child_frame} published!')
-
-    def modify_pose(self, request: ModifyPose.Request, response: ModifyPose.Response):
-        
-        # check if frame name is an object
-        for index, (obj_name, obj_trans, obj_rot) in enumerate(zip(self.object_names_list, self.object_translations_list,self.object_rotations_list)):
-
-            if request.frame_name == obj_name:
-
-
-                self.object_translations_list[index].x += request.rel_pose.position.x
-                self.object_translations_list[index].y += request.rel_pose.position.y
-                self.object_translations_list[index].z += request.rel_pose.position.z
-              
-                self.object_rotations_list[index] = quaternion_multiply(self.object_rotations_list[index],request.rel_pose.orientation)
-
-                self.publish_transform_TF(self.object_names_list[index],self.object_parent_frames_list[index],self.object_translations_list[index],self.object_rotations_list[index])
-                self.publsih_topics()
-                self.logger.info(f'Pose for object {request.frame_name} updated!')
-                response.success = True
-                return response
-
-        # check if frame name is a ref_frame
-        for index, (frame_name, frame_pose) in enumerate(zip(self.ref_frame_names_list, self.ref_frame_poses_list)):
-
-            if request.frame_name == frame_name:
-
-                self.ref_frame_poses_list[index].position.x += request.rel_pose.position.x
-                self.ref_frame_poses_list[index].position.y += request.rel_pose.position.y
-                self.ref_frame_poses_list[index].position.z += request.rel_pose.position.z
-
-                rel_orientation = check_and_return_quaternion(request.rel_pose.orientation,self.logger)
-
-                self.ref_frame_poses_list[index].orientation = quaternion_multiply(self.ref_frame_poses_list[index].orientation,rel_orientation)
-
-                self.publsih_topics()
-                self.publish_transform_TF(self.ref_frame_names_list[index],
-                                          self.ref_frame_parent_names_list[index],
-                                          self.ref_frame_poses_list[index].position, 
-                                          self.ref_frame_poses_list[index].orientation)
-                
-                self.logger.info(f'Pose for frame {request.frame_name} updated!')
-                response.success = True
-                return response
-
-        self.logger.warn("Pose could not be updated. Frame not found!")
-        response.success = False
-        return response
+        except Exception as e:
+            self.logger.error(e)
+            self.logger.error(f"Plane could not be created. Invalid message!")
+            return False
     
+    def get_parent_frame_for_ref_frame(self,frame_name:str)->str:
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            for ref_frame in obj.ref_frames:
+                ref_frame: soi_msgs.RefFrame
+                if ref_frame.frame_name == frame_name:
+                    return ref_frame.parent_frame
+                
+        for ref_frame in self.scene.ref_frames_in_scene:
+            ref_frame: soi_msgs.RefFrame
+            if ref_frame.frame_name == frame_name:
+                return ref_frame.parent_frame    
 
+        return None 
+
+    # def is_ref_frame_connected_to_obj(self, ref_frame_name:str)->(bool,str):
+    #     pass
+    
+    def modify_pose(self,frame_obj_name:str, rel_pose: Pose)-> bool:
+
+        pose_to_modify = None
+
+        for obj in self.scene.objects_in_scene:
+            obj: soi_msgs.Object
+            if obj.obj_name == frame_obj_name:
+                pose_to_modify = obj.obj_pose
+                break
+            for ref_frame in obj.ref_frames:
+                ref_frame:soi_msgs.RefFrame
+                if ref_frame.frame_name == frame_obj_name:
+                    pose_to_modify = ref_frame.pose
+                    break
+        for ref_frame in self.scene.ref_frames_in_scene:
+            ref_frame:soi_msgs.RefFrame
+            if ref_frame.frame_name == frame_obj_name:
+                pose_to_modify = ref_frame.pose
+                break
+        
+        if not pose_to_modify is None:
+            pose_to_modify.position.x += rel_pose.position.x
+            pose_to_modify.position.y += rel_pose.position.y
+            pose_to_modify.position.z += rel_pose.position.z
+            pose_to_modify.orientation = quaternion_multiply(pose_to_modify.orientation,rel_pose.orientation)
+            self.publish_information()
+            self.logger.info(f'Pose for object {frame_obj_name} updated!')
+            return True
+        else:
+            self.logger.warn(f"Pose could not be updated. Frame '{frame_obj_name}' not found!")
+            return False
     
 def main(args=None):
     rclpy.init(args=args)

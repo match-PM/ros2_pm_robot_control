@@ -9,7 +9,7 @@ from tf2_ros import Buffer, TransformListener, TransformBroadcaster, StaticTrans
 from spawn_object_interfaces.srv import DestroyObject
 from spawn_object_interfaces.srv import SpawnObject
 from spawn_object_interfaces.srv import SpawnFromDict
-from spawn_object_interfaces.msg import ObjectMsg
+from spawn_object_interfaces.msg import Object
 from spawn_object_interfaces.srv import CreateRefFrame
 
 from threading import Event
@@ -45,17 +45,20 @@ class TFPublisherNode(Node):
         # Callbacks can not run simutaniously
         self.callback_group_mu_ex = MutuallyExclusiveCallbackGroup()
 
-        self.object_topic_publisher_srv_spawn = self.create_service(SpawnObject,'object_manager/spawn_object',self.spawn_object_callback,callback_group=self.callback_group_re)
-        self.object_topic_publisher_srv_destroy = self.create_service(DestroyObject,'object_manager/destroy_object',self.destroy_object_callback,callback_group=self.callback_group_re)
-        self.object_topic_publisher_client_spawn = self.create_client(SpawnObject,'object_publisher/spawn_object',callback_group=self.callback_group_re) 
-        self.object_topic_publisher_client_destroy = self.create_client(DestroyObject,'object_publisher/destroy_object',callback_group=self.callback_group_re) 
+        # create service for obj
+        self.object_topic_publisher_srv_spawn = self.create_service(SpawnObject,'object_spawner_manager/spawn_object',self.spawn_object_callback,callback_group=self.callback_group_re)
+        self.object_topic_publisher_srv_destroy = self.create_service(DestroyObject,'object_spawner_manager/destroy_object',self.destroy_object_callback,callback_group=self.callback_group_re)
+        
+        # create client for publisher node
+        self.object_topic_publisher_client_spawn = self.create_client(SpawnObject,'object_spawner_publisher/spawn_object',callback_group=self.callback_group_re) 
+        self.object_topic_publisher_client_destroy = self.create_client(DestroyObject,'object_spawner_publisher/destroy_object',callback_group=self.callback_group_re) 
 
-        self.moveit_object_spawner_client = self.create_client(SpawnObject,'moveit_object_handler/spawn_object',callback_group=self.callback_group_re) 
-        self.moveit_object_destroyer_client = self.create_client(DestroyObject,'moveit_object_handler/destroy_object',callback_group=self.callback_group_re)    
+        self.moveit_object_spawner_client = self.create_client(SpawnObject,'object_spawner_moveit/spawn_object',callback_group=self.callback_group_re) 
+        self.moveit_object_destroyer_client = self.create_client(DestroyObject,'object_spawner_moveit/destroy_object',callback_group=self.callback_group_re)    
 
         # Service for Spawning from Dictionary
-        self.object_spawn_from_dict = self.create_service(SpawnFromDict,'object_manager/spawn_from_dict',self.spawn_from_dict,callback_group=self.callback_group_re)
-        self.create_ref_frame_client = self.create_client(CreateRefFrame,'object_manager/create_ref_frame',callback_group=self.callback_group_re) 
+        self.object_spawn_from_dict = self.create_service(SpawnFromDict,'object_spawner_manager/spawn_from_dict',self.spawn_from_dict,callback_group=self.callback_group_re)
+        self.create_ref_frame_client = self.create_client(CreateRefFrame,'object_spawner_manager/create_ref_frame',callback_group=self.callback_group_re) 
 
         self.logger = self.get_logger()
 

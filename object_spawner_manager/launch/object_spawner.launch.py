@@ -25,7 +25,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     sim_time = True
     object_spawner_manager = Node(
-        name="object_spawner_id",
+        name="object_spawner_manager",
         package="object_spawner_manager",
         executable="object_spawner_manager.py",
         #namespace = '',
@@ -35,7 +35,7 @@ def generate_launch_description():
     )
     
     object_topic_publisher = Node(
-        name="object_spawner_id",
+        name="object_spawner_publisher",
         package="object_spawner_manager",
         executable="spawn_object_tf.py",
         #namespace = '',

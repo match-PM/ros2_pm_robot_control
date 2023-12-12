@@ -16,16 +16,22 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SpawnObject.srv"
   "srv/DestroyObject.srv"
-
+  "srv/CreateRefPlane.srv"
+  "srv/CreateAssemblyInstructions.srv"
   "srv/CreateRefFrame.srv"
   "srv/DeleteRefFrame.srv"
   "srv/GetInfo.srv"
+  "srv/GetScene.srv"
   "srv/ModifyPose.srv"
   "srv/ChangeParentFrame.srv"
   "srv/DisableObjCollision.srv"
   "srv/SpawnFromDict.srv"
-  "msg/ObjectMsg.msg"
-  "msg/RefFrameMsg.msg"
+
+  "msg/AssemblyInstruction.msg"
+  "msg/Object.msg"
+  "msg/ObjectScene.msg"
+  "msg/RefFrame.msg"
+  "msg/Plane.msg"
   DEPENDENCIES geometry_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
 )
 if(BUILD_TESTING)
