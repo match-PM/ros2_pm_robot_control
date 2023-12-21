@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ChangeParentFrame.srv"
   "srv/DisableObjCollision.srv"
   "srv/SpawnFromDict.srv"
+  "srv/CalculateAssemblyInstructions.srv"
 
   "msg/AssemblyInstruction.msg"
   "msg/Object.msg"

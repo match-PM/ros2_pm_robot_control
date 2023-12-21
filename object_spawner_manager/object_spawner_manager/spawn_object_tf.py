@@ -5,9 +5,10 @@ from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import String
 from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Point
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster, StaticTransformBroadcaster
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
-
+import numpy as np
 from spawn_object_interfaces.srv import DestroyObject
 from spawn_object_interfaces.srv import SpawnObject
 from spawn_object_interfaces.msg import Object
@@ -22,7 +23,71 @@ from spawn_object_interfaces.srv import CreateRefFrame
 from spawn_object_interfaces.srv import DeleteRefFrame
 from spawn_object_interfaces.srv import GetInfo
 from spawn_object_interfaces.srv import ModifyPose
+
 from geometry_msgs.msg import Vector3, Quaternion
+import sympy as sp
+from typing import Union
+from scipy.optimize import minimize, least_squares
+
+def get_euler_rotation_matrix(alpha, beta, gamma):
+    rotation_z = sp.Matrix([
+        [sp.cos(alpha), -sp.sin(alpha), 0],
+        [sp.sin(alpha), sp.cos(alpha), 0],
+        [0, 0, 1]
+    ])
+
+    rotation_y = sp.Matrix([
+        [sp.cos(beta), 0, sp.sin(beta)],
+        [0, 1, 0],
+        [-sp.sin(beta), 0, sp.cos(beta)]
+    ])
+
+    rotation_x = sp.Matrix([
+        [1, 0, 0],
+        [0, sp.cos(gamma), -sp.sin(gamma)],
+        [0, sp.sin(gamma), sp.cos(gamma)]
+    ])
+
+    rotation_matrix = rotation_z * rotation_y * rotation_x
+    return rotation_matrix
+
+def rotation_matrix_to_quaternion(R)-> sp.Matrix:
+    trace_R = R[0, 0] + R[1, 1] + R[2, 2]
+    w = sp.sqrt(1 + trace_R) / 2
+    x = (R[2, 1] - R[1, 2]) / (4 * w)
+    y = (R[0, 2] - R[2, 0]) / (4 * w)
+    z = (R[1, 0] - R[0, 1]) / (4 * w)
+    return sp.Matrix([w, x, y, z])
+
+def euler_to_quaternion(roll:float, pitch:float, yaw:float)-> Quaternion:
+    """
+    Convert Euler angles to quaternion.
+
+    Parameters:
+    - roll: Rotation angle around the x-axis (in radians)
+    - pitch: Rotation angle around the y-axis (in radians)
+    - yaw: Rotation angle around the z-axis (in radians)
+
+    Returns:
+    - Quaternion
+    """
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+    result = Quaternion()
+    result.w = w
+    result.x = x
+    result.y = y
+    result.z = z
+    return result
 
 def quaternion_multiply(q0:Quaternion, q1:Quaternion)->Quaternion:
     """
@@ -98,7 +163,7 @@ def check_and_return_quaternion(object_to_check,logger=None):
 
 def adapt_transform_for_new_parent_frame(child_frame, new_parent_frame, tf_buffer: Buffer):
     # this function adapts the tf for parent_frame changes
-    t = tf_buffer.lookup_transform(child_frame, new_parent_frame,rclpy.time.Time())
+    t:TransformStamped = tf_buffer.lookup_transform(child_frame, new_parent_frame,rclpy.time.Time())
     trans = Vector3()
     rot = Quaternion()
     trans.x = -t.transform.translation.x
@@ -111,6 +176,43 @@ def adapt_transform_for_new_parent_frame(child_frame, new_parent_frame, tf_buffe
     rot.w = t.transform.rotation.w
 
     return trans, rot
+
+
+def get_transform_for_frame_in_world(frame_name: str, tf_buffer: Buffer) -> TransformStamped:
+    # this function adapts the tf for parent_frame changes
+    #transform:TransformStamped = tf_buffer.lookup_transform(frame_name, 'world',rclpy.time.Time())
+    transform:TransformStamped = tf_buffer.lookup_transform('world', frame_name, rclpy.time.Time())
+    return transform
+
+def get_point_from_ros_obj(position: Union[Vector3, Point]) -> sp.Point3D:
+    
+    if isinstance(position, Vector3):
+        position:Vector3
+        point = sp.Point3D(position.x, position.y, position.z, evaluate=False)
+    elif isinstance(position, Point):
+        position:Point
+        point = sp.Point3D(position.x, position.y, position.z, evaluate=False)
+    else:
+        raise ValueError
+    
+    return point
+
+def get_plane_from_frame_names(frames: list[str], tf_buffer: Buffer)-> sp.Plane:
+
+    if len(frames)!=3:
+        raise ValueError
+    
+    t1:TransformStamped = get_transform_for_frame_in_world(frames[0], tf_buffer)
+    t2:TransformStamped = get_transform_for_frame_in_world(frames[1], tf_buffer)
+    t3:TransformStamped = get_transform_for_frame_in_world(frames[2], tf_buffer)
+
+    p1 = get_point_from_ros_obj(t1.transform.translation)
+    p2 = get_point_from_ros_obj(t2.transform.translation)
+    p3 = get_point_from_ros_obj(t3.transform.translation)
+
+    plane = sp.Plane(p1,p2,p3)
+
+    return plane
 
 def publish_transform_tf_static(node: Node, 
                                 tf_broadcaster:StaticTransformBroadcaster, 
@@ -160,6 +262,10 @@ class TFPublisherNode(Node):
 
         self.create_ref_plane_srv = self.create_service(soi_srvs.CreateRefPlane,f'object_spawner_manager/create_ref_plane',self.create_ref_plane,callback_group=self.callback_group)      
 
+        self.create_assembly_instructions_srv = self.create_service(soi_srvs.CreateAssemblyInstructions,f'object_spawner_manager/create_assembly_instructions',self.create_assembly_instructions,callback_group=self.callback_group)      
+
+        self.calculate_assembly_instructions_srv = self.create_service(soi_srvs.CalculateAssemblyInstructions,f'object_spawner_manager/calculate_assembly_instructions',self.calculate_assembly_instructions,callback_group=self.callback_group)      
+
         self.timer = self.create_timer(5.0, self.object_scene.publish_information,callback_group=self.callback_group)
        
         self.get_logger().info("Object Topic publisher started!")
@@ -187,7 +293,6 @@ class TFPublisherNode(Node):
         return response
 
     def create_ref_plane(self,request:soi_srvs.CreateRefPlane.Request, response:soi_srvs.CreateRefPlane.Response):
-        self.get_logger().warn("Starting call")
         create_success = self.object_scene.create_ref_plane(plane = request.ref_plane)
         response.success = create_success
         return response
@@ -230,6 +335,36 @@ class TFPublisherNode(Node):
         response.success = modify_success
         return response
     
+    def create_assembly_instructions(self, request: soi_srvs.CreateAssemblyInstructions.Request, response: soi_srvs.CreateAssemblyInstructions.Response):
+        create_success = self.object_scene.create_assembly_instructions(instruction_id=request.assembly_instruction.id,
+                                                                        mate_1=request.assembly_instruction.plane_match_1,
+                                                                        mate_2=request.assembly_instruction.plane_match_2,
+                                                                        mate_3=request.assembly_instruction.plane_match_3)
+        response.success = create_success
+        return response
+    
+    def calculate_assembly_instructions(self, request: soi_srvs.CalculateAssemblyInstructions.Request, response: soi_srvs.CalculateAssemblyInstructions.Response):
+        
+        transfrom = self.object_scene.get_assembly_transformation_by_id(request.instruction_id)
+        if transfrom == None:
+            response.success = False
+        else:
+            response.success = True
+            response.assembly_transform = transfrom
+        return response
+    
+def get_point_of_plane_intersection(plane1: sp.Plane, plane2: sp.Plane, plane3: sp.Plane) -> sp.Point3D:
+    line = plane1.intersection(plane2)
+    # Get the first point of intersection, should also be the only one
+    #inter:sp.Point3D = plane3.intersection(line[0])
+    inter:sp.Point3D = plane3.intersection(line[0])[0]
+
+    if not isinstance(inter, sp.Point3D):
+        raise ValueError(f"Given planes (1.{plane1}, 2.{plane2}, 3.{plane3}) do not have a single point of intersection. Invalid plane selection!")
+    
+    # Value Error if not a point
+
+    return inter
 
 class ObjScene():
     UNUSED_FRAME_CONST = 'unused_frame'
@@ -249,7 +384,7 @@ class ObjScene():
 
     def publish_scene(self):
         self._scene_publisher.publish(self.scene)
-        self.logger.info("Object Scene has been published")
+        #self.logger.info("Object Scene has been published")
 
     def add_obj_to_scene(self, new_obj:soi_msgs.Object)-> bool:
 
@@ -452,7 +587,7 @@ class ObjScene():
             transform.transform.translation.z=ref_frame.pose.position.z
 
             self.tf_broadcaster.sendTransform(transform)
-            self.logger.info(f"TF for '{ref_frame.frame_name}' published!")
+            #self.logger.info(f"TF for '{ref_frame.frame_name}' published!")
 
         for obj in self.scene.objects_in_scene:
             obj: soi_msgs.Object
@@ -466,7 +601,7 @@ class ObjScene():
             transform_stamped.transform.rotation = obj.obj_pose.orientation
             self.tf_broadcaster.sendTransform(transform_stamped)
 
-            self.logger.info(f"TF for object'{obj.obj_name}' published!")
+            #self.logger.info(f"TF for object'{obj.obj_name}' published!")
 
         for obj in self.scene.objects_in_scene:
             obj: soi_msgs.Object
@@ -535,6 +670,13 @@ class ObjScene():
                 parent_frame_2 is None or 
                 parent_frame_3 is None):
                 self.logger.error(f"Given frames do not have the same parent frame or ref frame does not exist. Plane could not be created!")
+                return False
+
+            # Check if frames form a valid plane
+            try:
+                test_plane:sp.Plane = get_plane_from_frame_names(plane.point_names, tf_buffer=self.tf_buffer)
+            except ValueError as e:
+                self.logger.error(f"Given frames do not form a valid plane. Plane could not be created!")
                 return False
 
             list_to_append_plane = []
@@ -613,6 +755,246 @@ class ObjScene():
             self.logger.warn(f"Pose could not be updated. Frame '{frame_obj_name}' not found!")
             return False
     
+    def create_assembly_instructions(self,instruction_id:str, mate_1: list[str], mate_2: list[str], mate_3: list[str])->bool:
+
+        # Get plane msgs for object 1
+        obj1_plane1_msg = self.get_plane_from_scene(mate_1[0])
+        obj1_plane2_msg = self.get_plane_from_scene(mate_2[0])
+        obj1_plane3_msg = self.get_plane_from_scene(mate_3[0])
+
+        # Get plane msgs for object 2
+        obj2_plane1_msg = self.get_plane_from_scene(mate_1[1])
+        obj2_plane2_msg = self.get_plane_from_scene(mate_2[1])
+        obj2_plane3_msg = self.get_plane_from_scene(mate_3[1])   
+
+        # return false if planes do not exist in scene
+        if (obj1_plane1_msg is None or
+            obj1_plane2_msg is None or
+            obj1_plane3_msg is None or
+            obj2_plane1_msg is None or
+            obj2_plane2_msg is None or
+            obj2_plane3_msg is None):
+            self.logger.error(f"At least one of the given plane names does not exist. Invalid input!")
+            return False
+        
+        # Get parent frame of the first point of the respective planes to test for parent frames
+        obj1_plane1_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane1_msg.point_names[0])
+        obj1_plane2_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane2_msg.point_names[1])
+        obj1_plane3_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane3_msg.point_names[2])
+
+        obj2_plane1_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane1_msg.point_names[0])
+        obj2_plane2_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane2_msg.point_names[1])
+        obj2_plane3_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane3_msg.point_names[2])
+
+        self.logger.warn(f"{obj1_plane1_p1_parent_frame}, {obj1_plane2_p1_parent_frame}, {obj1_plane3_p1_parent_frame}, {obj2_plane1_p1_parent_frame}, {obj2_plane2_p1_parent_frame}, {obj2_plane3_p1_parent_frame},")
+        if obj1_plane1_p1_parent_frame != obj1_plane2_p1_parent_frame != obj1_plane3_p1_parent_frame:
+            self.logger.error(f"Planes at index 0 do not belong to the same parent frame. Invalid input")
+            return False
+
+        if obj2_plane1_p1_parent_frame != obj2_plane2_p1_parent_frame != obj2_plane3_p1_parent_frame:
+            self.logger.error(f"Planes at index 1 do not belong to the same parent frame. Invalid input")
+            return False
+        
+        # if we got here, we have a valid input for this method
+        instruction = soi_msgs.AssemblyInstruction()
+        instruction.plane_match_1 = mate_1
+        instruction.plane_match_2 = mate_2
+        instruction.plane_match_3 = mate_3
+        instruction.id = instruction_id
+
+        try:
+            transfrom = self.calculate_assembly_transformation(instruction)
+        except ValueError as e:
+            self.logger.error(str(e))
+            return False    
+        except Exception as e:
+            self.logger.error(str(e))
+            self.logger.error(f"Fatal Error")
+            return False
+        
+        self.scene.assembly_instructions.append(instruction)
+
+        return True
+    
+    def _get_plane_obj_from_scene(self, plane_name:str)-> sp.Plane:
+        plane_msg = self.get_plane_from_scene(plane_name)
+        pl1 = get_plane_from_frame_names(frames = plane_msg.point_names , tf_buffer=self.tf_buffer)
+        return pl1
+    
+    def get_assembly_instruction_by_id(self, instruction_id:str)->soi_msgs.AssemblyInstruction:
+        for instruction in self.scene.assembly_instructions:
+            instruction: soi_msgs.AssemblyInstruction
+            if instruction.id == instruction_id:
+                return instruction
+        
+        return None
+    
+    def get_assembly_transformation_by_id(self, instruction_id:str)->Pose:
+        instruction = self.get_assembly_instruction_by_id(instruction_id)
+        if instruction is None:
+            return None
+        else:
+            assembly_transform = self.calculate_assembly_transformation(instruction)
+            return assembly_transform
+    
+    def calculate_assembly_transformation(self, instruction:soi_msgs.AssemblyInstruction)->Pose:
+
+        obj_1_plane_1 = self._get_plane_obj_from_scene(instruction.plane_match_1[0])
+        obj_1_plane_2 = self._get_plane_obj_from_scene(instruction.plane_match_2[0])
+        obj_1_plane_3 = self._get_plane_obj_from_scene(instruction.plane_match_3[0])
+
+        obj_1_name = self.get_parent_frame_for_ref_frame(self.get_plane_from_scene(instruction.plane_match_1[0]).point_names[0])
+        obj_2_name = self.get_parent_frame_for_ref_frame(self.get_plane_from_scene(instruction.plane_match_1[1]).point_names[0])
+
+        self.logger.warn(f"obj1 = {obj_1_name}, obj2 = {obj_2_name}")
+        obj1_pose = get_transform_for_frame_in_world(obj_1_name,self.tf_buffer)
+
+        obj_1_mate_plane_intersection: sp.Point3D = get_point_of_plane_intersection(obj_1_plane_1, obj_1_plane_2, obj_1_plane_3)
+        
+        # Add a ref frame at the pose of the plane intersection
+        obj1_intersec_frame = soi_msgs.RefFrame()
+        obj1_intersec_frame.frame_name = f"{instruction.id}_Obj_1_intersec"
+        obj1_intersec_frame.parent_frame = obj_1_name
+        obj1_intersec_frame.pose.position.x = float(obj_1_mate_plane_intersection.x - obj1_pose.transform.translation.x)
+        obj1_intersec_frame.pose.position.y = float(obj_1_mate_plane_intersection.y - obj1_pose.transform.translation.y)
+        obj1_intersec_frame.pose.position.z = float(obj_1_mate_plane_intersection.z - obj1_pose.transform.translation.z)
+        add_frame_success = self.add_ref_frame_to_scene(obj1_intersec_frame)
+
+        if not add_frame_success:
+            raise Exception("Something is wrong")
+
+        obj_2_plane_1 = self._get_plane_obj_from_scene(instruction.plane_match_1[1])
+        obj_2_plane_2 = self._get_plane_obj_from_scene(instruction.plane_match_2[1])
+        obj_2_plane_3 = self._get_plane_obj_from_scene(instruction.plane_match_3[1])
+        obj_2_mate_plane_intersection: sp.Point3D = get_point_of_plane_intersection(obj_2_plane_1, obj_2_plane_2, obj_2_plane_3)
+
+        self.logger.warn(f"Intersection Obj1: {str(obj_1_mate_plane_intersection)}")
+        self.logger.warn(f"Intersection Obj2: {str(obj_2_mate_plane_intersection)}")
+        assembly_transfrom = Pose()
+
+        assembly_transfrom.position.x = float(obj_1_mate_plane_intersection.x - obj_2_mate_plane_intersection.x)
+        assembly_transfrom.position.y = float(obj_1_mate_plane_intersection.y - obj_2_mate_plane_intersection.y)
+        assembly_transfrom.position.z = float(obj_1_mate_plane_intersection.z - obj_2_mate_plane_intersection.z)
+        
+        basis_world = sp.Matrix([[1,0,0],[0,1,0],[0,0,1]])
+
+        #self.logger.warn(str(basis_world))
+
+        bvec_obj_1_1=sp.Matrix(obj_1_plane_1.normal_vector).normalized().evalf()
+        bvec_obj_1_2=-1*sp.Matrix(obj_1_plane_2.normal_vector).normalized().evalf()
+        bvec_obj_1_3=-1*sp.Matrix(obj_1_plane_3.normal_vector).normalized().evalf()
+
+        basis_obj_1: sp.Matrix = sp.Matrix.hstack(bvec_obj_1_1, bvec_obj_1_2, bvec_obj_1_3)
+
+        if bvec_obj_1_1.cross(bvec_obj_1_2) == bvec_obj_1_3:
+            self.logger.warn("It is right hand")
+        else:
+            self.logger.warn(f"Not right hand {bvec_obj_1_1.cross(bvec_obj_1_2).evalf()} != {bvec_obj_1_3.evalf()}")
+
+        
+        #self.logger.warn(f"Eignevalues B2: {basis_obj_1.eigenvals()}")
+        self.logger.warn(f"Basis obj 1 is: {basis_obj_1.evalf()}")
+
+        basis_obj_1_inv = basis_obj_1.inv()
+        #self.logger.warn(f"Basis obj 1 inv is: {basis_obj_1_inv.evalf()}")
+
+
+        bvec_obj_2_1=-1*sp.Matrix(obj_2_plane_1.normal_vector).normalized().evalf()
+        bvec_obj_2_2=sp.Matrix(obj_2_plane_2.normal_vector).normalized().evalf()
+        bvec_obj_2_3=-1*sp.Matrix(obj_2_plane_3.normal_vector).normalized().evalf()
+
+        basis_obj_2: sp.Matrix = sp.Matrix.hstack(bvec_obj_2_1, bvec_obj_2_2, bvec_obj_2_3)
+        basis_obj_2_inv = basis_obj_2.inv()
+        self.logger.warn(f"Basis obj 2 is: {basis_obj_2.evalf()}")
+
+        #rot_obj2_to_obj1 = basis_obj_2_inv * basis_obj_1
+        rot_obj2_to_obj1 = basis_obj_2 * basis_obj_1_inv
+
+        det_rot_obj2_to_obj1 = rot_obj2_to_obj1.det()
+        self.logger.warn(f"Rot obj 2 to 1: {rot_obj2_to_obj1.evalf()}")
+
+        #self.logger.warn(f"Eigenvalues Rot: {basis_obj_1.eigenvals()}")
+        #self.logger.warn(f"Det Rot: {det_rot_obj2_to_obj1}")
+        
+        initial_guess = np.array([0, 0, 0])
+
+        def euler_to_matrix(angles):
+            Rz = sp.Matrix([[sp.cos(angles[2]), -1*sp.sin(angles[2]), 0],
+                        [sp.sin(angles[2]), sp.cos(angles[2]), 0],
+                        [0, 0, 1]])
+
+            Ry = sp.Matrix([[sp.cos(angles[1]), 0, sp.sin(angles[1])],
+                        [0, 1, 0],
+                        [-1*sp.sin(angles[1]), 0, sp.cos(angles[1])]])
+
+            Rx = sp.Matrix([[1, 0, 0],
+                        [0, sp.cos(angles[0]), -1*sp.sin(angles[0])],
+                        [0, sp.sin(angles[0]), sp.cos(angles[0])]])
+
+            return Rz * Ry * Rx
+        
+        def cost_function(params, target_matrix):
+            alpha, beta, gamma = params
+            rotation_matrix = get_euler_rotation_matrix(alpha,beta,gamma)
+            difference = (rotation_matrix - target_matrix).norm()
+            return difference
+       
+        if not round(det_rot_obj2_to_obj1, 9) == 1.0:
+            self.logger.warn(f"Invalid plane selection")
+            #return False
+        
+        #result = minimize(cost_function, initial_guess, args=(rot_obj2_to_obj1),  method='L-BFGS-B', tol = 1e-10, options={'maxiter': 1000})
+        self.logger.warn(f"Starting calculating the transformation...")
+        max_iter = 1000
+        result = minimize(cost_function, initial_guess, args=(rot_obj2_to_obj1),  method='Nelder-Mead', tol = 1e-16, options={'maxiter': max_iter})
+        if max_iter == result.nit:
+            self.logger.info(f"Max iterations reached ({max_iter}). Measurement inacurate.")
+        else:
+            self.logger.info(f"Iterations ran: {result.nit}")
+        self.logger.info(f"Residual error: {result.fun}")
+        self.logger.info(f"Result (deg) is: \nalpha: {result.x[0]*(180/np.pi)}, \nbeta:{result.x[1]*(180/np.pi)}, \ngamma:{result.x[2]*(180/np.pi)}")
+
+        Quat = euler_to_quaternion(roll   = result.x[2],
+                                    pitch  = result.x[1],
+                                    yaw    = result.x[0])
+        
+        assembly_transfrom.orientation = Quat
+        self.logger.info(f"Transformation is: {assembly_transfrom.__str__()}")
+
+        # Add a ref frame at the pose of the plane intersection
+        transfrom_frame = soi_msgs.RefFrame()
+        transfrom_frame.frame_name = f"transform_frame"
+        transfrom_frame.parent_frame = 'world'
+        obj_1_intersec_world = get_transform_for_frame_in_world(obj_1_name, self.tf_buffer)
+        transfrom_frame.pose.position.x = float(obj_1_mate_plane_intersection.x - assembly_transfrom.position.x)
+        transfrom_frame.pose.position.y = float(obj_1_mate_plane_intersection.y- assembly_transfrom.position.y)
+        transfrom_frame.pose.position.z = float(obj_1_mate_plane_intersection.z - assembly_transfrom.position.z)
+        transfrom_frame.pose.orientation = quaternion_multiply(assembly_transfrom.orientation, obj_1_intersec_world.transform.rotation)
+        add_frame_success = self.add_ref_frame_to_scene(transfrom_frame)
+        if not add_frame_success:
+            raise Exception
+
+        return assembly_transfrom
+    
+    def get_plane_from_scene(self, plane_name:str)-> soi_msgs.Plane:
+        plane_msg = None
+        for plane in self.scene.planes_in_scene:
+            plane: soi_msgs.Plane
+            if plane_name == plane.ref_plane_name:
+                plane_msg = plane
+                break
+
+        for obj in self.scene.objects_in_scene:
+            obj:soi_msgs.Object
+            for plane in obj.ref_planes:
+                plane: soi_msgs.Plane
+                if plane_name == plane.ref_plane_name:
+                    plane_msg = plane
+                    break
+
+        return plane_msg
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = TFPublisherNode()
