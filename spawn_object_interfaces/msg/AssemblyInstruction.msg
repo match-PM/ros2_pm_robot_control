@@ -1,4 +1,5 @@
 string id
-string[2] plane_match_1
-string[2] plane_match_2
-string[2] plane_match_3
+bool component_1_is_moving_part 
+ConstraintPlanes plane_match_1
+ConstraintPlanes plane_match_2
+ConstraintPlanes plane_match_3
