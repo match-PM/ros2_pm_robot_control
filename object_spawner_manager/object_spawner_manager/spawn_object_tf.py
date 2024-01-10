@@ -16,7 +16,7 @@ from spawn_object_interfaces.msg import RefFrame
 import spawn_object_interfaces.msg as soi_msgs
 import tf2_geometry_msgs
 import spawn_object_interfaces.srv as soi_srvs
-
+import copy
 from spawn_object_interfaces.srv import ChangeParentFrame
 from spawn_object_interfaces.srv import CreateRefFrame
 from spawn_object_interfaces.srv import DeleteRefFrame
@@ -222,6 +222,21 @@ def get_plane_from_frame_names(frames: list[str], tf_buffer: Buffer)-> sp.Plane:
 
     return plane
 
+def get_line3d_from_frame_names(frames: list[str], tf_buffer: Buffer)-> sp.Line3D:
+
+    if len(frames)!=2:
+        raise ValueError
+    
+    t1:TransformStamped = get_transform_for_frame_in_world(frames[0], tf_buffer)
+    t2:TransformStamped = get_transform_for_frame_in_world(frames[1], tf_buffer)
+
+    p1 = get_point_from_ros_obj(t1.transform.translation)
+    p2 = get_point_from_ros_obj(t2.transform.translation)
+
+    line = sp.Line3D(p1,p2)
+
+    return line
+
 def publish_transform_tf_static(node: Node, 
                                 tf_broadcaster:StaticTransformBroadcaster, 
                                 child_frame:str, 
@@ -279,6 +294,20 @@ def transform_matrix_to_pose(transform_matrix:sp.Matrix)-> Pose:
         orientation=Quaternion(x=float(quaternion[1]), y=float(quaternion[2]), z=float(quaternion[3]), w=float(quaternion[0])))
     return pose_msg 
 
+def euler_to_matrix(angles:list):
+    Rz = sp.Matrix([[sp.cos(angles[2]), -1*sp.sin(angles[2]), 0],
+                [sp.sin(angles[2]), sp.cos(angles[2]), 0],
+                [0, 0, 1]])
+
+    Ry = sp.Matrix([[sp.cos(angles[1]), 0, sp.sin(angles[1])],
+                [0, 1, 0],
+                [-1*sp.sin(angles[1]), 0, sp.cos(angles[1])]])
+
+    Rx = sp.Matrix([[1, 0, 0],
+                [0, sp.cos(angles[0]), -1*sp.sin(angles[0])],
+                [0, sp.sin(angles[0]), sp.cos(angles[0])]])
+
+    return Rz * Ry * Rx
 
 class TFPublisherNode(Node):
     def __init__(self):
@@ -301,8 +330,10 @@ class TFPublisherNode(Node):
         self.get_info_srv = self.create_service(soi_srvs.GetScene,f'object_spawner_manager/get_scene',self.get_scene,callback_group=self.callback_group)      
 
         self.create_ref_plane_srv = self.create_service(soi_srvs.CreateRefPlane,f'object_spawner_manager/create_ref_plane',self.create_ref_plane,callback_group=self.callback_group)      
+        
+        self.create_axis_srv = self.create_service(soi_srvs.CreateAxis,f'object_spawner_manager/create_axis',self.create_axis,callback_group=self.callback_group)      
 
-        self.create_assembly_instructions_srv = self.create_service(soi_srvs.CreateAssemblyInstructions,f'object_spawner_manager/create_assembly_instructions',self.create_assembly_instructions,callback_group=self.callback_group)      
+        self.create_assembly_instructions_srv = self.create_service(soi_srvs.CreateAssemblyInstructions,f'object_spawner_manager/create_assembly_instructions',self.srv_create_assembly_instructions,callback_group=self.callback_group)      
 
         self.calculate_assembly_instructions_srv = self.create_service(soi_srvs.CalculateAssemblyInstructions,f'object_spawner_manager/calculate_assembly_instructions',self.calculate_assembly_instructions,callback_group=self.callback_group)      
 
@@ -337,6 +368,11 @@ class TFPublisherNode(Node):
         response.success = create_success
         return response
 
+    def create_axis(self,request:soi_srvs.CreateAxis.Request, response:soi_srvs.CreateAxis.Response):
+        create_success = self.object_scene.create_axis(axis = request.axis)
+        response.success = create_success
+        return response
+    
     def destroy_ref_frame(self, request:DeleteRefFrame.Request, response:DeleteRefFrame.Response):
         """This is the callback function for the /CreateRefFrame service. If the TF Frame does not exist, the function creates a new TF Frame. 
         If the frame already exists, the inforamtion will be updated!"""
@@ -375,7 +411,7 @@ class TFPublisherNode(Node):
         response.success = modify_success
         return response
     
-    def create_assembly_instructions(self, request: soi_srvs.CreateAssemblyInstructions.Request, response: soi_srvs.CreateAssemblyInstructions.Response):
+    def srv_create_assembly_instructions(self, request: soi_srvs.CreateAssemblyInstructions.Request, response: soi_srvs.CreateAssemblyInstructions.Response):
         create_success = self.object_scene.create_assembly_instructions(instruction=request.assembly_instruction)
         response.success = create_success
         return response
@@ -425,7 +461,11 @@ class ObjScene():
 
     def add_obj_to_scene(self, new_obj:soi_msgs.Object)-> bool:
 
-        name_conflict = self.check_ref_frame_exists(new_obj.obj_name)
+        if new_obj.obj_name == "":
+            self.logger.error(f"Name of the component should not be empty. Aboarted!")
+            return False
+        
+        name_conflict, _ = self.check_ref_frame_exists(new_obj.obj_name)
 
         if name_conflict:
             self.logger.error(f'Object can not have the same name as an existing reference frame!')
@@ -450,9 +490,10 @@ class ObjScene():
             for index, obj in enumerate(self.scene.objects_in_scene):
                 obj:soi_msgs.Object
                 if obj.obj_name == new_obj.obj_name:
-                    del self.scene.objects_in_scene[index]
                     new_obj.obj_pose.orientation = check_and_return_quaternion(new_obj.obj_pose.orientation,self.logger)
-                    self.scene.objects_in_scene.append(new_obj)
+                    obj.cad_data = new_obj.cad_data
+                    obj.obj_pose = new_obj.obj_pose
+                    obj.parent_frame = new_obj.parent_frame
 
                     self.logger.warn(f'Service for spawning {new_obj.obj_name} was called, but object does already exist!')
                     self.logger.warn(f'Information for {new_obj.obj_name} updated!')
@@ -465,7 +506,7 @@ class ObjScene():
     def add_ref_frame_to_scene(self, new_ref_frame:soi_msgs.RefFrame)-> bool:
 
         # checks if ref frame frame exists
-        ref_frame_existend = self.check_ref_frame_exists(new_ref_frame.frame_name)
+        ref_frame_existend, parent_frame = self.check_ref_frame_exists(new_ref_frame.frame_name)
 
         # checks if object with same name exists
         name_conflict_1 = self.check_object_exists(new_ref_frame.frame_name)
@@ -496,14 +537,22 @@ class ObjScene():
         if not ref_frame_existend:
             frame_list_to_append_to.append(new_ref_frame)
         else:
+            if parent_frame != new_ref_frame.parent_frame:
+                frame_list_to_delete = self.get_obj_by_name(parent_frame).ref_frames
+                for index, frame in enumerate(frame_list_to_delete):
+                    frame: soi_msgs.RefFrame
+                    if frame.frame_name == new_ref_frame.frame_name:
+                        del frame_list_to_delete[index]
+                        self.logger.warn(f'Service for creating {new_ref_frame.frame_name} was called, but frame does already exist! Information for {new_ref_frame.frame_name} updated!')
+        
             for index, frame in enumerate(frame_list_to_append_to):
                 frame: soi_msgs.RefFrame
                 if frame.frame_name == new_ref_frame.frame_name:
                     del frame_list_to_append_to[index]
-                    frame_list_to_append_to.append(new_ref_frame)
-                    break
-                self.logger.warn(f'Service for creating {new_ref_frame.frame_name} was called, but frame does already exist! Information for {new_ref_frame.frame_name} updated!')
-        
+                    self.logger.warn(f'Service for creating {new_ref_frame.frame_name} was called, but frame does already exist! Information for {new_ref_frame.frame_name} updated!')
+                
+            frame_list_to_append_to.append(new_ref_frame)
+
         self.publish_information()
         return True
 
@@ -659,7 +708,7 @@ class ObjScene():
                 transform.transform.translation.z=ref_frame.pose.position.z
 
                 self.tf_broadcaster.sendTransform(transform)
-                self.logger.info(f"TF for '{ref_frame.frame_name}' published!")
+                #self.logger.info(f"TF for '{ref_frame.frame_name}' published!")
 
     def check_if_frame_exists(self, frame_id:str) -> bool:
         # This function checks if a tf exists in the tf buffer
@@ -678,13 +727,13 @@ class ObjScene():
                 return True
         return False
     
-    def check_ref_frame_exists(self,name_frame:str) -> bool:
+    def check_ref_frame_exists(self,name_frame:str) -> Union[bool,str]:
         # this function checks if an frame esixts in the frame list
         # iterate over ref_frames
         for ref_frame in self.scene.ref_frames_in_scene:
             ref_frame:soi_msgs.RefFrame
             if ref_frame.frame_name == name_frame:
-                return True
+                return True, None
         
         # iterate over objects
         for obj in self.scene.objects_in_scene:
@@ -693,19 +742,91 @@ class ObjScene():
             for obj_ref_frame in obj.ref_frames:
                 obj_ref_frame:soi_msgs.RefFrame
                 if obj_ref_frame.frame_name == name_frame:
-                    return True
+                    return True, obj.obj_name
                 
-        return False
-    
-    def create_ref_plane(self, plane: soi_msgs.Plane) -> bool:
+        return False, None
+
+    def create_axis(self, axis: soi_msgs.Axis) -> bool:
+
         try:
-            if not len(plane.point_names) == 3:
+            if axis.axis_name == "":
+                self.logger.error(f"Name of the axis should not be empty. Aboarted!")
+                return False
+            
+            if not len(axis.point_names) == 2:
                 self.logger.error(f"Not enough input arguments. Plane could not be created!")
                 return False
             
-            parent_frame_1 = self.get_parent_frame_for_ref_frame(plane.point_names[0])
-            parent_frame_2 = self.get_parent_frame_for_ref_frame(plane.point_names[1])
-            parent_frame_3 = self.get_parent_frame_for_ref_frame(plane.point_names[2])
+            parent_frame_1 = self.get_parent_frame_for_ref_frame(axis.point_names[0])
+            parent_frame_2 = self.get_parent_frame_for_ref_frame(axis.point_names[1])
+
+            if (not (parent_frame_1 == parent_frame_2) or 
+                parent_frame_1 is None or 
+                parent_frame_2 is None):
+                self.logger.error(f"Given frames do not have the same parent frame or ref frame does not exist. Axis could not be created!")
+                return False
+
+            # Check if frames form a valid plane
+            try:
+                test_axis:sp.Line3D = get_line3d_from_frame_names(axis.point_names, tf_buffer=self.tf_buffer)
+            except ValueError as e:
+                self.logger.error(f"Given frames do not form a valid plane. Plane could not be created!")
+                return False
+
+            list_to_append_axis= []
+
+            # try to get parent object of ref frame 
+            obj = self.get_obj_by_name(parent_frame_1)
+            
+            if obj is None:
+                list_to_append_axis = self.scene.axis_in_scene
+            else:
+                list_to_append_axis = obj.ref_axis
+
+            for ind, _axis in enumerate(list_to_append_axis):
+                _axis:soi_msgs.Axis
+                if _axis.axis_name == axis.axis_name:
+                    list_to_append_axis[ind] = axis
+                    return True
+            
+            # if above for loop executes without returning append the plane because it does not yet excist.
+            list_to_append_axis.append(axis)
+            self.logger.info(f"Axis '{axis.axis_name}' created! Axis is defined by frames 1.{axis.point_names[0]}, 2.{axis.point_names[1]}.")
+            return True
+
+        except Exception as e:
+            self.logger.error(e)
+            self.logger.error(f"Plane could not be created. Invalid message!")
+            return False
+        
+    def create_ref_plane(self, plane: soi_msgs.Plane) -> bool:
+        try:
+            if plane.ref_plane_name == "":
+                self.logger.error(f"Name of the plane should not be empty. Aboarted!")
+                return False
+
+            if (plane.axis_names[0]=='' and
+                plane.point_names[0]!='' and 
+                plane.point_names[1]!='' and 
+                plane.point_names[2]!=''):
+                mode = 'PlanePPP'
+                parent_frame_1 = self.get_parent_frame_for_ref_frame(plane.point_names[0])
+                parent_frame_2 = self.get_parent_frame_for_ref_frame(plane.point_names[1])
+                parent_frame_3 = self.get_parent_frame_for_ref_frame(plane.point_names[2])
+
+            elif (plane.axis_names[0]!='' and
+                plane.point_names[0]!='' and 
+                plane.point_names[1]=='' and 
+                plane.point_names[2]==''):
+                mode = 'PlaneAP'
+                axis_msg = self.get_axis_from_scene(plane.axis_names[0])
+                parent_frame_1 = self.get_parent_frame_for_ref_frame(axis_msg.point_names[0])
+                parent_frame_2 = self.get_parent_frame_for_ref_frame(axis_msg.point_names[1])
+                parent_frame_3 = self.get_parent_frame_for_ref_frame(plane.point_names[0])
+            else:
+                self.logger.error(f"Invalid input for creation of reference plane. Plane should be defined by 3 x frames or by 1 x axis + 1 x frame!")
+                return False
+            
 
             if (not (parent_frame_1 == parent_frame_2 == parent_frame_3) or 
                 parent_frame_1 is None or 
@@ -716,7 +837,13 @@ class ObjScene():
 
             # Check if frames form a valid plane
             try:
-                test_plane:sp.Plane = get_plane_from_frame_names(plane.point_names, tf_buffer=self.tf_buffer)
+                if mode == 'PlanePPP':
+                    test_plane: sp.Plane = get_plane_from_frame_names(plane.point_names, tf_buffer=self.tf_buffer)
+                    logger_message = f"Plane '{plane.ref_plane_name}' created! Plane is defined by frames 1.{plane.point_names[0]}, 2.{plane.point_names[1]}, 3.{plane.point_names[2]}."
+                else:
+                    test_plane: sp.Plane = self.get_plane_from_axis_and_frame(plane.axis_names[0],plane.point_names[0])
+                    logger_message = f"Plane '{plane.ref_plane_name}' created! Plane is defined by axis '{plane.axis_names[0]}' and point '{plane.point_names[0]}'."
+
             except ValueError as e:
                 self.logger.error(f"Given frames do not form a valid plane. Plane could not be created!")
                 return False
@@ -739,7 +866,7 @@ class ObjScene():
             
             # if above for loop executes without returning append the plane because it does not yet excist.
             list_to_append_plane.append(plane)
-            self.logger.info(f"Plane '{plane.ref_plane_name}' created! Plane is defined by frames 1.{plane.point_names[0]}, 2.{plane.point_names[1]}, 3.{plane.point_names[2]}.")
+            self.logger.info(logger_message)
             return True
 
         except Exception as e:
@@ -798,8 +925,11 @@ class ObjScene():
             return False
     
     def create_assembly_instructions(self,instruction: soi_msgs.AssemblyInstruction)->bool:
-
         # Get plane msgs for object 1
+        if instruction.id == "":
+                self.logger.error(f"ID of the instruction shoud not be empty. Aboarted!")
+                return False
+            
         obj1_plane1_msg = self.get_plane_from_scene(instruction.plane_match_1.plane_name_component_1)
         obj1_plane2_msg = self.get_plane_from_scene(instruction.plane_match_2.plane_name_component_1)
         obj1_plane3_msg = self.get_plane_from_scene(instruction.plane_match_3.plane_name_component_1)
@@ -819,23 +949,24 @@ class ObjScene():
             self.logger.error(f"At least one of the given plane names does not exist ('{obj1_plane1_msg}', '{obj1_plane2_msg}', '{obj1_plane3_msg}', '{obj2_plane1_msg}', '{obj2_plane2_msg}', '{obj2_plane3_msg}'). Invalid input!")
             return False
         
-        # Get parent frame of the first point of the respective planes to test for parent frames
-        obj1_plane1_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane1_msg.point_names[0])
-        obj1_plane2_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane2_msg.point_names[1])
-        obj1_plane3_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane3_msg.point_names[2])
+        # # Get parent frame of the first point of the respective planes to test for parent frames
+        # obj1_plane1_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane1_msg.point_names[0])
+        # obj1_plane2_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane2_msg.point_names[1])
+        # obj1_plane3_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj1_plane3_msg.point_names[2])
 
-        obj2_plane1_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane1_msg.point_names[0])
-        obj2_plane2_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane2_msg.point_names[1])
-        obj2_plane3_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane3_msg.point_names[2])
+        # obj2_plane1_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane1_msg.point_names[0])
+        # obj2_plane2_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane2_msg.point_names[1])
+        # obj2_plane3_p1_parent_frame = self.get_parent_frame_for_ref_frame(obj2_plane3_msg.point_names[2])
 
-        self.logger.warn(f"{obj1_plane1_p1_parent_frame}, {obj1_plane2_p1_parent_frame}, {obj1_plane3_p1_parent_frame}, {obj2_plane1_p1_parent_frame}, {obj2_plane2_p1_parent_frame}, {obj2_plane3_p1_parent_frame},")
-        if obj1_plane1_p1_parent_frame != obj1_plane2_p1_parent_frame != obj1_plane3_p1_parent_frame:
-            self.logger.error(f"Planes for component 1 do not belong to the same parent frame. Invalid input!")
-            return False
+        # self.logger.warn(f"{obj1_plane1_p1_parent_frame}, {obj1_plane2_p1_parent_frame}, {obj1_plane3_p1_parent_frame}, {obj2_plane1_p1_parent_frame}, {obj2_plane2_p1_parent_frame}, {obj2_plane3_p1_parent_frame},")
+        # if obj1_plane1_p1_parent_frame != obj1_plane2_p1_parent_frame != obj1_plane3_p1_parent_frame:
+        #     self.logger.error(f"Planes for component 1 do not belong to the same parent frame. Invalid input!")
+        #     return False
 
-        if obj2_plane1_p1_parent_frame != obj2_plane2_p1_parent_frame != obj2_plane3_p1_parent_frame:
-            self.logger.error(f"Planes for component 2 do not belong to the same parent frame. Invalid input!")
-            return False
+        # if obj2_plane1_p1_parent_frame != obj2_plane2_p1_parent_frame != obj2_plane3_p1_parent_frame:
+        #     self.logger.error(f"Planes for component 2 do not belong to the same parent frame. Invalid input!")
+        #     return False
+
         try:
             transfrom = self.calculate_assembly_transformation(instruction)
         except ValueError as e:
@@ -846,14 +977,39 @@ class ObjScene():
             self.logger.error(f"Fatal Error")
             return False
         
-        self.scene.assembly_instructions.append(instruction)
+        inst_exists=False
+        for index, _inst in enumerate(self.scene.assembly_instructions):
+            _inst : soi_msgs.AssemblyInstruction
+            if _inst.id == instruction.id:
+                del self.scene.assembly_instructions[index]
+                self.scene.assembly_instructions.append(instruction)
+                _inst = instruction
+                inst_exists=True
+                break
+        if not inst_exists:
+            self.scene.assembly_instructions.append(instruction)
 
         return True
     
     def _get_plane_obj_from_scene(self, plane_name:str)-> sp.Plane:
         plane_msg = self.get_plane_from_scene(plane_name)
-        pl1 = get_plane_from_frame_names(frames = plane_msg.point_names , tf_buffer=self.tf_buffer)
-        return pl1
+        plane_msg: soi_msgs.Plane
+        if (plane_msg.axis_names[0]=='' and
+            plane_msg.point_names[0]!='' and 
+            plane_msg.point_names[1]!='' and 
+            plane_msg.point_names[2]!=''):
+            
+            plane = get_plane_from_frame_names(frames = plane_msg.point_names , tf_buffer=self.tf_buffer)
+
+        elif (plane_msg.axis_names[0]!='' and
+            plane_msg.point_names[0]!='' and 
+            plane_msg.point_names[1]=='' and 
+            plane_msg.point_names[2]==''):
+            plane = self.get_plane_from_axis_and_frame(plane_msg.axis_names[0], plane_msg.point_names[0])
+        else:
+            plane = None
+
+        return plane
     
     def get_assembly_instruction_by_id(self, instruction_id:str)->soi_msgs.AssemblyInstruction:
         for instruction in self.scene.assembly_instructions:
@@ -878,8 +1034,6 @@ class ObjScene():
 
         obj_1_name = self.get_parent_frame_for_ref_frame(self.get_plane_from_scene(instruction.plane_match_1.plane_name_component_1).point_names[0])
         obj_2_name = self.get_parent_frame_for_ref_frame(self.get_plane_from_scene(instruction.plane_match_1.plane_name_component_2).point_names[0])
-
-        self.logger.warn(f"obj1 = {obj_1_name}, obj2 = {obj_2_name}")
         
         obj_1_mate_plane_intersection: sp.Point3D = get_point_of_plane_intersection(obj_1_plane_1, obj_1_plane_2, obj_1_plane_3)
         
@@ -888,9 +1042,9 @@ class ObjScene():
         obj_2_plane_3 = self._get_plane_obj_from_scene(instruction.plane_match_3.plane_name_component_2)
         obj_2_mate_plane_intersection: sp.Point3D = get_point_of_plane_intersection(obj_2_plane_1, obj_2_plane_2, obj_2_plane_3)
 
-        self.logger.warn(f"Intersection Obj1: {str(obj_1_mate_plane_intersection)}")
-        self.logger.warn(f"Intersection Obj2: {str(obj_2_mate_plane_intersection)}")
-        assembly_transfrom = Pose()
+        #self.logger.warn(f"Intersection Obj1: {str(obj_1_mate_plane_intersection)}")
+        #self.logger.warn(f"Intersection Obj2: {str(obj_2_mate_plane_intersection)}")
+        assembly_transform = Pose()
 
         if instruction.component_1_is_moving_part:
             moving_component = obj_1_name
@@ -903,15 +1057,14 @@ class ObjScene():
             moving_component_plane_intersection = obj_2_mate_plane_intersection
             static_component_plane_intersection = obj_1_mate_plane_intersection
 
-        assembly_transfrom.position.x = float(static_component_plane_intersection.x - moving_component_plane_intersection.x)
-        assembly_transfrom.position.y = float(static_component_plane_intersection.y - moving_component_plane_intersection.y)
-        assembly_transfrom.position.z = float(static_component_plane_intersection.z - moving_component_plane_intersection.z)
-        
-        basis_world = sp.Matrix([[1,0,0],[0,1,0],[0,0,1]])
-        #self.logger.warn(str(basis_world))
-
+        self.logger.warn(f"\nMoving component: '{moving_component}'\nStatic component: '{static_component}'")
+        assembly_transform.position.x = float(static_component_plane_intersection.x - moving_component_plane_intersection.x)
+        assembly_transform.position.y = float(static_component_plane_intersection.y - moving_component_plane_intersection.y)
+        assembly_transform.position.z = float(static_component_plane_intersection.z - moving_component_plane_intersection.z)
+    
         bvec_obj_1_1=sp.Matrix(obj_1_plane_1.normal_vector).normalized().evalf()
-        bvec_obj_1_2=-1*sp.Matrix(obj_1_plane_2.normal_vector).normalized().evalf()
+        #bvec_obj_1_2=-1*sp.Matrix(obj_1_plane_2.normal_vector).normalized().evalf()
+        bvec_obj_1_2=sp.Matrix(obj_1_plane_2.normal_vector).normalized().evalf()
         bvec_obj_1_3=-1*sp.Matrix(obj_1_plane_3.normal_vector).normalized().evalf()
 
         basis_obj_1: sp.Matrix = sp.Matrix.hstack(bvec_obj_1_1, bvec_obj_1_2, bvec_obj_1_3)
@@ -921,78 +1074,65 @@ class ObjScene():
         else:
             self.logger.warn(f"Not right hand {bvec_obj_1_1.cross(bvec_obj_1_2).evalf()} != {bvec_obj_1_3.evalf()}")
 
-        
         #self.logger.warn(f"Eignevalues B2: {basis_obj_1.eigenvals()}")
-        self.logger.warn(f"Basis obj 1 is: {basis_obj_1.evalf()}")
+        #self.logger.warn(f"Basis obj 1 is: {basis_obj_1.evalf()}")
 
         bvec_obj_2_1=-1*sp.Matrix(obj_2_plane_1.normal_vector).normalized().evalf()
         bvec_obj_2_2=sp.Matrix(obj_2_plane_2.normal_vector).normalized().evalf()
         bvec_obj_2_3=-1*sp.Matrix(obj_2_plane_3.normal_vector).normalized().evalf()
 
         basis_obj_2: sp.Matrix = sp.Matrix.hstack(bvec_obj_2_1, bvec_obj_2_2, bvec_obj_2_3)
-        self.logger.warn(f"Basis obj 2 is: {basis_obj_2.evalf()}")
+        #self.logger.warn(f"Basis obj 2 is: {basis_obj_2.evalf()}")
 
         if instruction.component_1_is_moving_part:
             rot_matrix = basis_obj_2 * basis_obj_1.inv()
         else:
             rot_matrix = basis_obj_1 * basis_obj_2.inv()
-        
-        #rot_obj2_to_obj1 = basis_obj_2_inv * basis_obj_1
 
         det_rot_matrix= rot_matrix.det()
         self.logger.warn(f"Rot obj 2 to 1: {rot_matrix.evalf()}")
 
         #self.logger.warn(f"Eigenvalues Rot: {rot_matrix.eigenvals()}")
         #self.logger.warn(f"Det Rot: {det_rot_matrix}")
-        
-        initial_guess = np.array([0, 0, 0])
-
-        def euler_to_matrix(angles):
-            Rz = sp.Matrix([[sp.cos(angles[2]), -1*sp.sin(angles[2]), 0],
-                        [sp.sin(angles[2]), sp.cos(angles[2]), 0],
-                        [0, 0, 1]])
-
-            Ry = sp.Matrix([[sp.cos(angles[1]), 0, sp.sin(angles[1])],
-                        [0, 1, 0],
-                        [-1*sp.sin(angles[1]), 0, sp.cos(angles[1])]])
-
-            Rx = sp.Matrix([[1, 0, 0],
-                        [0, sp.cos(angles[0]), -1*sp.sin(angles[0])],
-                        [0, sp.sin(angles[0]), sp.cos(angles[0])]])
-
-            return Rz * Ry * Rx
-        
-        def cost_function(params, target_matrix):
-            alpha, beta, gamma = params
-            rotation_matrix = get_euler_rotation_matrix(alpha,beta,gamma)
-            difference = (rotation_matrix - target_matrix).norm()
-            return difference
-       
+               
         if not round(det_rot_matrix, 9) == 1.0:
             self.logger.warn(f"Invalid plane selection")
             #return False
-        
-        #result = minimize(cost_function, initial_guess, args=(rot_obj2_to_obj1),  method='L-BFGS-B', tol = 1e-10, options={'maxiter': 1000})
-        self.logger.warn(f"Starting calculating the transformation...")
-        max_iter = 1000
-        result = minimize(cost_function, initial_guess, args=(rot_matrix),  method='Nelder-Mead', tol = 1e-16, options={'maxiter': max_iter})
-        if max_iter == result.nit:
-            self.logger.info(f"Max iterations reached ({max_iter}). Measurement inacurate.")
-        else:
-            self.logger.info(f"Iterations ran: {result.nit}")
-        self.logger.info(f"Residual error: {result.fun}")
-        self.logger.info(f"Result (deg) is: \nalpha: {result.x[0]*(180/np.pi)}, \nbeta:{result.x[1]*(180/np.pi)}, \ngamma:{result.x[2]*(180/np.pi)}")
 
-        Quat = euler_to_quaternion(roll   = result.x[2],
-                                    pitch  = result.x[1],
-                                    yaw    = result.x[0])
-        
-        assembly_transfrom.orientation = Quat
-        self.logger.info(f"Transformation is: {assembly_transfrom.__str__()}")
+        # Calculate the approx quaternion
+        assembly_transform.orientation = self.calc_approx_quat_from_matrix(rot_matrix)
 
-        # Create frame for the moving component
+        #self.logger.info(f"Assembly transformation is: {assembly_transform.__str__()}")
+        self.logger.info(f"""Assembly transformation is: \n
+                         x: {assembly_transform.position.x},\n
+                         y: {assembly_transform.position.y},\n
+                         z: {assembly_transform.position.z},\n
+                         w: {assembly_transform.orientation.w},\n
+                         x: {assembly_transform.orientation.x},\n
+                         y: {assembly_transform.orientation.y},\n
+                         z: {assembly_transform.orientation.z}""")
+
+        add_success = self.add_assembly_frames_to_scene(instruction.id,
+                                                        moving_component,
+                                                        static_component,
+                                                        moving_component_plane_intersection,
+                                                        static_component_plane_intersection,
+                                                        assembly_transform)
+        if not add_success:
+            raise Exception
+        
+        return assembly_transform
+    
+    def add_assembly_frames_to_scene(   self,
+                                        instruction_id:str,
+                                        moving_component: str, 
+                                        static_component:str, 
+                                        moving_component_plane_intersection:sp.Point3D, 
+                                        static_component_plane_intersection:sp.Point3D, 
+                                        assembly_transform: Pose)-> bool:
+        
         assembly_frame = soi_msgs.RefFrame()
-        assembly_frame.frame_name = f"assembly_frame_{instruction.id}"
+        assembly_frame.frame_name = f"assembly_frame_{instruction_id}"
         assembly_frame.parent_frame = moving_component
         assembly_frame.pose.position.x = float(moving_component_plane_intersection.x)
         assembly_frame.pose.position.y = float(moving_component_plane_intersection.y)
@@ -1008,24 +1148,49 @@ class ObjScene():
 
         # Create frame for the static component
         target_frame = soi_msgs.RefFrame()
-        target_frame.frame_name = f"target_frame_{instruction.id}"
+        target_frame.frame_name = f"target_frame_{instruction_id}"
         target_frame.parent_frame = static_component
         target_frame.pose.position.x = float(static_component_plane_intersection.x)
         target_frame.pose.position.y = float(static_component_plane_intersection.y)
         target_frame.pose.position.z = float(static_component_plane_intersection.z)
+        #target_frame.pose.orientation = quaternion_multiply(assembly_transfrom.orientation, target_frame.pose.orientation)
+        target_frame.pose.orientation = quaternion_multiply(assembly_transform.orientation, moving_component_world_transform.transform.rotation)
+
         static_component_world_transform = get_transform_for_frame_in_world(static_component, self.tf_buffer)
-        
         target_frame_matrix = get_transform_matrix_from_tf(target_frame.pose)
         static_component_matrix = get_transform_matrix_from_tf(static_component_world_transform)
         helper_pose_2 = transform_matrix_to_pose(static_component_matrix.inv()*target_frame_matrix)
         target_frame.pose = helper_pose_2
-        target_frame.pose.orientation = quaternion_multiply(assembly_transfrom.orientation, moving_component_world_transform.transform.rotation)
         add_target_frame_success = self.add_ref_frame_to_scene(target_frame)
+        result = add_assembly_frame_success and add_target_frame_success
+        return result
+        
+    def calc_approx_quat_from_matrix(self, rot_mat: sp.Matrix) -> Quaternion:
+        initial_guess = np.array([0, 0, 0])
+        
+        def cost_function(params, target_matrix):
+            alpha, beta, gamma = params
+            rotation_matrix = get_euler_rotation_matrix(alpha,beta,gamma)
+            difference = (rotation_matrix - target_matrix).norm()
+            return difference
+        
+        self.logger.warn(f"Starting calculating the transformation...")
+        max_iter = 1000
 
-        if not add_assembly_frame_success or not add_target_frame_success:
-            raise Exception
+        #result = minimize(cost_function, initial_guess, args=(rot_obj2_to_obj1),  method='L-BFGS-B', tol = 1e-10, options={'maxiter': 1000})
+        result = minimize(cost_function, initial_guess, args=(rot_mat),  method='Nelder-Mead', tol = 1e-20, options={'maxiter': max_iter})
 
-        return assembly_transfrom
+        if max_iter == result.nit:
+            self.logger.info(f"Max iterations reached ({max_iter}). Measurement inacurate.")
+        else:
+            self.logger.info(f"Iterations ran: {result.nit}")
+        self.logger.info(f"Residual error: {result.fun}")
+        self.logger.info(f"Result (deg) is: \nalpha: {result.x[0]*(180/np.pi)}, \nbeta: {result.x[1]*(180/np.pi)}, \ngamma:{result.x[2]*(180/np.pi)}")
+
+        quaternion = euler_to_quaternion(   roll   = result.x[2],
+                                            pitch  = result.x[1],
+                                            yaw    = result.x[0])
+        return quaternion
     
     def get_plane_from_scene(self, plane_name:str)-> soi_msgs.Plane:
         plane_msg = None
@@ -1044,7 +1209,35 @@ class ObjScene():
                     break
 
         return plane_msg
+    
+    def get_axis_from_scene(self, axis_name:str)-> soi_msgs.Axis:
+        axis_msg = None
+        for axis in self.scene.axis_in_scene:
+            axis: soi_msgs.Axis
+            if axis_name == axis.axis_name:
+                axis_msg = axis
+                break
 
+        for obj in self.scene.objects_in_scene:
+            obj:soi_msgs.Object
+            for axis in obj.ref_axis:
+                axis: soi_msgs.Axis
+                if axis_name == axis.axis_name:
+                    axis_msg = axis
+                    break
+        return axis_msg
+    
+    def get_plane_from_axis_and_frame(self, axis_name: str, frame_name: str)-> sp.Plane:
+        axis_msg = self.get_axis_from_scene(axis_name)
+
+        line3d:sp.Line3D = get_line3d_from_frame_names(axis_msg.point_names, tf_buffer=self.tf_buffer)
+
+        t_point:TransformStamped = get_transform_for_frame_in_world(frame_name, self.tf_buffer)
+        point = get_point_from_ros_obj(t_point.transform.translation)
+
+        plane = sp.Plane(point, normal_vector = line3d.direction)
+
+        return plane
 
 def main(args=None):
     rclpy.init(args=args)

@@ -27,7 +27,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/DisableObjCollision.srv"
   "srv/SpawnFromDict.srv"
   "srv/CalculateAssemblyInstructions.srv"
-
+  "srv/CreateAxis.srv"
+  
   "msg/AssemblyInstruction.msg"
   "msg/Object.msg"
   "msg/ObjectScene.msg"
