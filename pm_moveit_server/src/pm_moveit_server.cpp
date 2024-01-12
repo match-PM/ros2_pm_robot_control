@@ -22,6 +22,7 @@
 #include "pm_moveit_interfaces/srv/move_cam1_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_laser_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_tool_tcp_to.hpp"
+#include "pm_moveit_interfaces/srv/move_cam1_tcp_relative.hpp"
 
 #include <moveit/planning_scene/planning_scene.h>
 
@@ -80,7 +81,7 @@ geometry_msgs::msg::Quaternion quaternion_multiply(geometry_msgs::msg::Quaternio
   return result;
 }
 
-std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_service(std::string planning_group,
+std::tuple<bool, std::string, std::vector<std::string>, std::vector<double>> exec_move_group_service(std::string planning_group,
                                                                            std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group,
                                                                            std::string frame_name,
                                                                            geometry_msgs::msg::Pose move_to_pose,
@@ -107,6 +108,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
   geometry_msgs::msg::Pose target_pose;
   std::vector<double> target_joint_values;
   bool service_success;
+  std::string return_msg;
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Model frame: %s", kinematic_model->getModelFrame().c_str());
 
   geometry_msgs::msg::Quaternion target_rotation;
@@ -144,7 +146,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
     {
       RCLCPP_FATAL(rclcpp::get_logger("pm_moveit"), "Could not transform %s to 'world': %s", endeffector.c_str(), ex.what());
       service_success = false;
-      return {service_success, joint_names, target_joint_values};
+      return {service_success,return_msg, joint_names, target_joint_values};
     }
   }
   // if frame_name is empty
@@ -180,7 +182,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
     {
       RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Could not transform %s to %s: %s", toFrameRel.c_str(), fromFrameRel.c_str(), ex.what());
       service_success = false;
-      return {service_success, joint_names, target_joint_values};
+      return {service_success, return_msg, joint_names, target_joint_values};
     }
   }
 
@@ -235,18 +237,19 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
     success_calculate_plan = (move_group->plan(*plan) == moveit::core::MoveItErrorCode::SUCCESS);
     if (success_calculate_plan)
     {
-
       service_success = true;
     }
     else
     {
       RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "Planing failed!");
+      return_msg = "MoveIt planing failed!";
       service_success = false;
     }
   }
   else
   {
     RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "Did not find IK solution");
+    return_msg = "MoveIt did not find IK solution";
     service_success = false;
   }
   laser_grp_visual_tools->deleteAllMarkers();
@@ -260,6 +263,9 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
   if (success_calculate_plan && execute)
   {
     move_group->execute(*plan);
+
+    service_success = true;
+    return_msg = "MoveIt: Movement executed";
     // Checking delta;
     try
     {
@@ -303,16 +309,50 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
   else
   {
     RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Plan not executed!");
+    service_success = false;
+    return_msg = "Movement not executed";
   }
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
-  return {service_success, joint_names, target_joint_values};
+  return {service_success, return_msg, joint_names, target_joint_values};
+}
+
+void move_group_cam1_relative(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpRelative::Request> request,
+                     std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpRelative::Response> response)
+{
+  std::string frame_name = "";
+
+  geometry_msgs::msg::Pose move_to_pose;
+  move_to_pose.position.x = 0.0;
+  move_to_pose.position.y = 0.0;
+  move_to_pose.position.z = 0.0;
+  move_to_pose.orientation.x = 0.0;
+  move_to_pose.orientation.y = 0.0;
+  move_to_pose.orientation.z = 0.0;
+  move_to_pose.orientation.w = 1.0;
+
+  auto [success, return_msg, joint_names, joint_values] = exec_move_group_service("PM_Robot_Cam1_TCP",
+                                                         Cam1_move_group,
+                                                         frame_name,
+                                                         move_to_pose,
+                                                         request->translation,
+                                                         request->rotation,
+                                                         request->exec_wait_for_user_input,
+                                                         request->execute);
+
+  response->success = success;
+  response->return_msg = return_msg;
+  response->joint_names = joint_names;
+  std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
+  response->joint_values = joint_values_float;
+
+  return;
 }
 
 void move_group_cam1(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpTo::Request> request,
                      std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpTo::Response> response)
 {
 
-  auto [success, joint_names, joint_values] = exec_move_group_service("PM_Robot_Cam1_TCP",
+  auto [success, return_msg, joint_names, joint_values] = exec_move_group_service("PM_Robot_Cam1_TCP",
                                                          Cam1_move_group,
                                                          request->frame_name,
                                                          request->move_to_pose,
@@ -322,6 +362,7 @@ void move_group_cam1(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1Tc
                                                          request->execute);
 
   response->success = success;
+  response->return_msg = return_msg;
   response->joint_names = joint_names;
   std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
   response->joint_values = joint_values_float;
@@ -333,7 +374,7 @@ void move_group_tool(const std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTc
                      std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTcpTo::Response> response)
 {
 
-  auto [success, joint_names, joint_values] = exec_move_group_service("PM_Robot_Tool_TCP",
+  auto [success, return_msg, joint_names, joint_values] = exec_move_group_service("PM_Robot_Tool_TCP",
                                                          tool_move_group,
                                                          request->frame_name,
                                                          request->move_to_pose,
@@ -343,6 +384,7 @@ void move_group_tool(const std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTc
                                                          request->execute);
 
   response->success = success;
+  response->return_msg = return_msg;
   response->joint_names = joint_names;
   std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
   response->joint_values = joint_values_float;
@@ -354,7 +396,7 @@ void move_group_laser(const std::shared_ptr<pm_moveit_interfaces::srv::MoveLaser
                       std::shared_ptr<pm_moveit_interfaces::srv::MoveLaserTcpTo::Response> response)
 {
 
-  auto [success, joint_names, joint_values] = exec_move_group_service("PM_Robot_Laser_TCP",
+  auto [success, return_msg, joint_names, joint_values] = exec_move_group_service("PM_Robot_Laser_TCP",
                                                          laser_move_group,
                                                          request->frame_name,
                                                          request->move_to_pose,
@@ -364,6 +406,7 @@ void move_group_laser(const std::shared_ptr<pm_moveit_interfaces::srv::MoveLaser
                                                          request->execute);
 
   response->success = success;
+  response->return_msg = return_msg;
   response->joint_names = joint_names;
   std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
   response->joint_values = joint_values_float;
@@ -420,6 +463,7 @@ int main(int argc, char **argv)
   rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpTo>::SharedPtr move_cam_one_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpTo>("pm_moveit_server/move_cam1_to_frame", &move_group_cam1);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpTo>::SharedPtr move_tool_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpTo>("pm_moveit_server/move_tool_to_frame", &move_group_tool);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveLaserTcpTo>::SharedPtr move_laser_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveLaserTcpTo>("pm_moveit_server/move_laser_to_frame", &move_group_laser);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpRelative>::SharedPtr move_cam_one_relative_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpRelative>("pm_moveit_server/move_cam1_relative", &move_group_cam1_relative);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Ready for operation...");
   spin_thread->join();
   rclcpp::shutdown();
@@ -800,7 +844,7 @@ ros2 service call /pm_moveit_server/move_tool_to_frame pm_moveit_interfaces/srv/
 
 
 ros2 service call /pm_moveit_server/move_cam1_to_frame pm_moveit_interfaces/srv/MoveCam1TcpTo "{
-  frame_name: 'Camera_Station_TCP',
+  frame_name: '',
   move_to_pose: {
     position: {
       x: 0.530,

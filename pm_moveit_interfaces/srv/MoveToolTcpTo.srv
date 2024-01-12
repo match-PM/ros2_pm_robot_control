@@ -6,5 +6,6 @@ bool exec_wait_for_user_input
 bool execute
 ---
 bool success
+string return_msg
 string[] joint_names
 float32[] joint_values
