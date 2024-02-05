@@ -23,6 +23,8 @@
 #include "pm_moveit_interfaces/srv/move_laser_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_tool_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_cam1_tcp_relative.hpp"
+#include "pm_moveit_interfaces/srv/move_tool_tcp_relative.hpp"
+#include "pm_moveit_interfaces/srv/move_laser_tcp_relative.hpp"
 
 #include <moveit/planning_scene/planning_scene.h>
 
@@ -341,9 +343,70 @@ void move_group_cam1_relative(const std::shared_ptr<pm_moveit_interfaces::srv::M
 
   response->success = success;
   response->return_msg = return_msg;
-  response->joint_names = joint_names;
-  std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
-  response->joint_values = joint_values_float;
+  // response->joint_names = joint_names;
+  // std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
+  // response->joint_values = joint_values_float;
+
+  return;
+}
+
+void move_group_laser_relative(const std::shared_ptr<pm_moveit_interfaces::srv::MoveLaserTcpRelative::Request> request,
+                     std::shared_ptr<pm_moveit_interfaces::srv::MoveLaserTcpRelative::Response> response)
+{
+  std::string frame_name = "";
+
+  geometry_msgs::msg::Pose move_to_pose;
+  move_to_pose.position.x = 0.0;
+  move_to_pose.position.y = 0.0;
+  move_to_pose.position.z = 0.0;
+  move_to_pose.orientation.x = 0.0;
+  move_to_pose.orientation.y = 0.0;
+  move_to_pose.orientation.z = 0.0;
+  move_to_pose.orientation.w = 1.0;
+
+  auto [success, return_msg, joint_names, joint_values] = exec_move_group_service("PM_Robot_Laser_TCP",
+                                                         laser_move_group,
+                                                         frame_name,
+                                                         move_to_pose,
+                                                         request->translation,
+                                                         request->rotation,
+                                                         request->exec_wait_for_user_input,
+                                                         request->execute);
+
+  response->success = success;
+  response->return_msg = return_msg;
+
+  return;
+}
+
+void move_group_tool_relative(const std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTcpRelative::Request> request,
+                     std::shared_ptr<pm_moveit_interfaces::srv::MoveToolTcpRelative::Response> response)
+{
+  std::string frame_name = "";
+
+  geometry_msgs::msg::Pose move_to_pose;
+  move_to_pose.position.x = 0.0;
+  move_to_pose.position.y = 0.0;
+  move_to_pose.position.z = 0.0;
+  move_to_pose.orientation.x = 0.0;
+  move_to_pose.orientation.y = 0.0;
+  move_to_pose.orientation.z = 0.0;
+  move_to_pose.orientation.w = 1.0;
+
+  auto [success, return_msg, joint_names, joint_values] = exec_move_group_service("PM_Robot_Tool_TCP",
+                                                         tool_move_group,
+                                                         frame_name,
+                                                         move_to_pose,
+                                                         request->translation,
+                                                         request->rotation,
+                                                         request->exec_wait_for_user_input,
+                                                         request->execute);
+
+  response->success = success;
+  response->return_msg = return_msg;
+  // response->joint_names = joint_names;
+  // std::vector<float> joint_values_float(joint_values.begin(), joint_values.end());
+  // response->joint_values = joint_values_float;
 
   return;
 }
@@ -461,9 +524,11 @@ int main(int argc, char **argv)
 
   rclcpp::Service<pm_moveit_interfaces::srv::ExecutePlan>::SharedPtr execute_plan_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::ExecutePlan>("pm_moveit_server/execute_plan", &execute_plan);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpTo>::SharedPtr move_cam_one_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpTo>("pm_moveit_server/move_cam1_to_frame", &move_group_cam1);
-  rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpTo>::SharedPtr move_tool_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpTo>("pm_moveit_server/move_tool_to_frame", &move_group_tool);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpTo>::SharedPtr move_tool_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpTo>("pm_moveit_server/move_gripper_to_frame", &move_group_tool);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveLaserTcpTo>::SharedPtr move_laser_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveLaserTcpTo>("pm_moveit_server/move_laser_to_frame", &move_group_laser);
   rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpRelative>::SharedPtr move_cam_one_relative_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpRelative>("pm_moveit_server/move_cam1_relative", &move_group_cam1_relative);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpRelative>::SharedPtr move_tool_relative_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpRelative>("pm_moveit_server/move_gripper_relative", &move_group_tool_relative);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveLaserTcpRelative>::SharedPtr move_tool_laser_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveLaserTcpRelative>("pm_moveit_server/move_laser_relative", &move_group_laser_relative);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Ready for operation...");
   spin_thread->join();
   rclcpp::shutdown();

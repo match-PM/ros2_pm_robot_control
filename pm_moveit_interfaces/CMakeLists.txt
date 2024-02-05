@@ -32,6 +32,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveToolTcpTo.srv"
   "srv/ExecutePlan.srv"
   "srv/MoveCam1TcpRelative.srv"
+  "srv/MoveToolTcpRelative.srv"
+  "srv/MoveLaserTcpRelative.srv"
   DEPENDENCIES geometry_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
 )
 
