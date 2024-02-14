@@ -312,7 +312,7 @@ std::tuple<bool, std::string, std::vector<std::string>, std::vector<double>> exe
   {
     RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Plan not executed!");
     service_success = false;
-    return_msg = "Movement not executed";
+    return_msg = "Movement not executed. Execute was set to false!";
   }
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
   return {service_success, return_msg, joint_names, target_joint_values};
