@@ -22,8 +22,9 @@
 #include "pm_moveit_interfaces/srv/move_cam1_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_laser_tcp_to.hpp"
 #include "pm_moveit_interfaces/srv/move_tool_tcp_to.hpp"
-
+#include "sensor_msgs/msg/joint_state.hpp"
 #include <moveit/planning_scene/planning_scene.h>
+#include "trajectory_msgs/msg/joint_trajectory.hpp"
 
 using std::placeholders::_1;
 
@@ -40,6 +41,10 @@ std::shared_ptr<robot_model_loader::RobotModelLoader> PM_Robot_Model_Loader;
 std::shared_ptr<moveit::planning_interface::MoveGroupInterface::Plan> plan;
 std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
 std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+sensor_msgs::msg::JointState::SharedPtr global_joint_state;
+// create shared pointer to node publisher
+std::shared_ptr<rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>> xyz_trajectory_publisher;
+std::shared_ptr<rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>> t_trajectory_publisher;
 
 bool execute_plan(const std::shared_ptr<pm_moveit_interfaces::srv::ExecutePlan::Request> request,
                   std::shared_ptr<pm_moveit_interfaces::srv::ExecutePlan::Response> response)
@@ -78,6 +83,54 @@ geometry_msgs::msg::Quaternion quaternion_multiply(geometry_msgs::msg::Quaternio
   result.w = q0q1_w;
 
   return result;
+}
+
+void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
+    // Process the received joint state message
+    // For example, print the names and positions of the joints
+    for (size_t i = 0; i < msg->name.size(); ++i) {
+        std::cout << "Joint Name: " << msg->name[i] << ", Position: " << msg->position[i] << std::endl;
+        //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Joint Name: %s, Value: %f",msg->name[i].c_str(), msg->position[i]);
+    }
+    global_joint_state = msg;
+}
+
+bool check_goal_reached(std::vector<std::string> target_joints, std::vector<double> target_joint_values, float delta_trans, float delta_rot)
+{
+  float delta_value;
+  for (size_t i = 0; i < target_joints.size(); i++)
+  {
+    if (target_joints[i] == "T_Axis_Joint")
+    {
+      // This means rotation
+      delta_value = delta_rot;
+    }
+    else
+    {
+      // This means translation
+      delta_value = delta_trans;
+    }
+
+    // find joint in joint state
+    auto it = std::find(global_joint_state->name.begin(), global_joint_state->name.end(), target_joints[i]);
+    if (it == global_joint_state->name.end()) {
+        // Joint not found
+        // Handle error or return false
+        return false;
+    }
+    int current_joint_index = std::distance(global_joint_state->name.begin(), it);
+    float current_joint_value = global_joint_state->position[current_joint_index];
+    float differrence = std::abs(current_joint_value - target_joint_values[i]);
+    
+    RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Joint: %s, Target: %f, Current: %f, Delta: %f", target_joints[i].c_str(), target_joint_values[i], current_joint_value, differrence);
+    
+    
+    if (differrence > delta_value)
+    {
+      return false;
+    }
+  }    
+  return true;
 }
 
 std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_service(std::string planning_group,
@@ -184,7 +237,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
     }
   }
 
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Pose:");
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Calculated Endeffector Pose:");
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose X %f", target_pose.position.x);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Y %f", target_pose.position.y);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Z %f", target_pose.position.z);
@@ -205,9 +258,10 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
   tf2::convert(end_effector_state,tf2Transform);
   tf2::Vector3 endeffector_pose_planed = tf2Transform.getOrigin();
 
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose X %f", endeffector_pose_planed.getX());
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose Y %f", endeffector_pose_planed.getY());
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose Z %f", endeffector_pose_planed.getZ());
+  // This is the same as the calculated Endeffector Pose
+  //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose X %f", endeffector_pose_planed.getX());
+  //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose Y %f", endeffector_pose_planed.getY());
+  //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose Z %f", endeffector_pose_planed.getZ());
 
   bool success_calculate_plan = false;
 
@@ -225,12 +279,12 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
     {
       RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Joint Values for %s: %f", joint_names[i].c_str(), target_joint_values[i]);
     }
-    move_group->setPlanningTime(10);
+    move_group->setPlanningTime(20);
     //move_group->setGoalPositionTolerance(1e-9); // 10 nm    
     move_group->setGoalPositionTolerance(0.000000001); // 1 nm    
     move_group->setStartStateToCurrentState();
     move_group->setJointValueTarget(target_joint_values);
-    
+    move_group->setNumPlanningAttempts(100);
 
     success_calculate_plan = (move_group->plan(*plan) == moveit::core::MoveItErrorCode::SUCCESS);
     if (success_calculate_plan)
@@ -263,7 +317,42 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
     // Checking delta;
     try
     {
-      std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+      float delta = 0.0005;  // in meters
+      while (check_goal_reached(joint_names, target_joint_values, 0.0005, 0.01) == false)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for goal to be reached...");
+      }
+      auto trajectory_msg = std::make_shared<trajectory_msgs::msg::JointTrajectory>();
+      trajectory_msg->joint_names = {"X_Axis_Joint", "Y_Axis_Joint", "Z_Axis_Joint"}; // Specify joint names
+
+      trajectory_msgs::msg::JointTrajectoryPoint point;
+      point.positions = {target_joint_values[0], target_joint_values[1], target_joint_values[2]};  // Specify joint positions
+      point.velocities = {0.0, 0.0, 0.0}; // Specify joint velocities
+      point.accelerations = {0.0, 0.0, 0.0}; // Specify joint accelerations
+      point.time_from_start.sec = 0.5; // Specify duration
+      trajectory_msg->points.push_back(point);
+      xyz_trajectory_publisher->publish(*trajectory_msg);
+
+      // If planning group is PM_Robot_Tool_TCP, publish T_Axis_Joint trajectory
+      if (planning_group == "PM_Robot_Tool_TCP")
+      {
+        auto t_trajectory_msg = std::make_shared<trajectory_msgs::msg::JointTrajectory>();
+        t_trajectory_msg->joint_names = {"T_Axis_Joint"}; // Specify joint names
+        trajectory_msgs::msg::JointTrajectoryPoint t_point;
+        t_point.positions = {target_joint_values[3]};  // Specify joint positions
+        t_point.velocities = {0.0}; // Specify joint velocities
+        t_point.accelerations = {0.0}; // Specify joint accelerations
+        t_point.time_from_start.sec = 0.5; // Specify duration
+        t_trajectory_msg->points.push_back(t_point);
+        t_trajectory_publisher->publish(*t_trajectory_msg);
+      }
+
+      while (check_goal_reached(joint_names, target_joint_values, 0.0000001, 0.0001) == false)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for goal to be reached...");
+      }
 
       geometry_msgs::msg::TransformStamped moved_to_transform;
       geometry_msgs::msg::Pose moved_to_pose;
@@ -274,9 +363,10 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
       moved_to_pose.position.y = moved_to_transform.transform.translation.y;
       moved_to_pose.position.z = moved_to_transform.transform.translation.z;
 
-      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose X3 %f", moved_to_pose.position.x);
-      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Y3 %f", moved_to_pose.position.y);
-      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Pose Z3 %f", moved_to_pose.position.z);
+      RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Moved to Endeffector Pose: ");
+      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "X: %f", moved_to_pose.position.x);
+      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Y: %f", moved_to_pose.position.y);
+      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Z: %f", moved_to_pose.position.z);
       
       // auto this_pose = move_group->getCurrentPose(endeffector);
 
@@ -287,9 +377,10 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
       // double deltaX = moved_to_pose.position.x - target_pose.position.x;
       // double deltaY = moved_to_pose.position.y - target_pose.position.y;
       // double deltaZ = moved_to_pose.position.z - target_pose.position.z;
-      double deltaX = endeffector_pose_planed.getX() - target_pose.position.x;
-      double deltaY = endeffector_pose_planed.getY() - target_pose.position.y;
-      double deltaZ = endeffector_pose_planed.getZ() - target_pose.position.z;
+      
+      double deltaX = endeffector_pose_planed.getX() - moved_to_pose.position.x;
+      double deltaY = endeffector_pose_planed.getY() - moved_to_pose.position.y;
+      double deltaZ = endeffector_pose_planed.getZ() - moved_to_pose.position.z;
       RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Pose Deltas: ");
       RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "X: %f um", deltaX * 1000000);
       RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Y: %f um", deltaY * 1000000);
@@ -307,6 +398,9 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> exec_move_group_
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
   return {service_success, joint_names, target_joint_values};
 }
+
+
+
 
 void move_group_cam1(const std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpTo::Request> request,
                      std::shared_ptr<pm_moveit_interfaces::srv::MoveCam1TcpTo::Response> response)
@@ -378,14 +472,29 @@ int main(int argc, char **argv)
   auto const pm_moveit_server_node = std::make_shared<rclcpp::Node>(
       "pm_moveit_server",
       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
-  rclcpp::executors::SingleThreadedExecutor executor;
 
-  auto spin_thread = std::make_unique<std::thread>([&executor, &pm_moveit_server_node]()
-                                                   {
-    executor.add_node(pm_moveit_server_node);
-    executor.spin();
-    executor.remove_node(pm_moveit_server_node); });
+  auto callback_group_re = pm_moveit_server_node->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  rclcpp::SubscriptionOptions node_options_1;
+  node_options_1.callback_group = callback_group_re;
 
+  auto callback_group_me = pm_moveit_server_node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions node_options_2;
+  node_options_2.callback_group = callback_group_me;
+
+  rclcpp::ExecutorOptions exec_options;
+  //exec_options->num_threads = 4;
+
+  //auto executor = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(pm_moveit_server_node);
+  // auto spin_thread = std::make_unique<std::thread>([&executor, &pm_moveit_server_node]()
+  //                                                  {
+  //   executor.add_node(pm_moveit_server_node);
+  //   executor.spin();
+  //   executor.remove_node(pm_moveit_server_node); });
+  
   auto const logger = rclcpp::get_logger("hello_moveit");
 
   laser_move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(pm_moveit_server_node, "PM_Robot_Laser_TCP");
@@ -412,16 +521,22 @@ int main(int argc, char **argv)
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   // Dont know why this has to be called at this point, but otherwith the service callbacks get stuck.
-  auto current_state_cam1 = Cam1_move_group->getCurrentState(1.0);
-  auto current_state_tool = tool_move_group->getCurrentState(1.0);
-  auto current_state_laser = laser_move_group->getCurrentState(1.0);
+  //auto current_state_cam1 = Cam1_move_group->getCurrentState(1.0);
+  //auto current_state_tool = tool_move_group->getCurrentState(1.0);
+  //auto current_state_laser = laser_move_group->getCurrentState(1.0);
 
-  rclcpp::Service<pm_moveit_interfaces::srv::ExecutePlan>::SharedPtr execute_plan_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::ExecutePlan>("pm_moveit_server/execute_plan", &execute_plan);
-  rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpTo>::SharedPtr move_cam_one_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpTo>("pm_moveit_server/move_cam1_to_frame", &move_group_cam1);
-  rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpTo>::SharedPtr move_tool_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpTo>("pm_moveit_server/move_tool_to_frame", &move_group_tool);
-  rclcpp::Service<pm_moveit_interfaces::srv::MoveLaserTcpTo>::SharedPtr move_laser_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveLaserTcpTo>("pm_moveit_server/move_laser_to_frame", &move_group_laser);
+  rclcpp::Service<pm_moveit_interfaces::srv::ExecutePlan>::SharedPtr execute_plan_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::ExecutePlan>("pm_moveit_server/execute_plan", std::bind(&execute_plan,  std::placeholders::_1, std::placeholders::_2),rmw_qos_profile_services_default, callback_group_me);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveCam1TcpTo>::SharedPtr move_cam_one_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveCam1TcpTo>("pm_moveit_server/move_cam1_to_frame", std::bind(&move_group_cam1,  std::placeholders::_1, std::placeholders::_2),rmw_qos_profile_services_default, callback_group_me);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveToolTcpTo>::SharedPtr move_tool_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveToolTcpTo>("pm_moveit_server/move_tool_to_frame", std::bind(&move_group_tool,  std::placeholders::_1, std::placeholders::_2),rmw_qos_profile_services_default, callback_group_me);
+  rclcpp::Service<pm_moveit_interfaces::srv::MoveLaserTcpTo>::SharedPtr move_laser_service = pm_moveit_server_node->create_service<pm_moveit_interfaces::srv::MoveLaserTcpTo>("pm_moveit_server/move_laser_to_frame", std::bind(&move_group_laser,  std::placeholders::_1, std::placeholders::_2),rmw_qos_profile_services_default, callback_group_me);
+
+  xyz_trajectory_publisher = pm_moveit_server_node->create_publisher<trajectory_msgs::msg::JointTrajectory>("/pm_robot_xyz_axis_controller/joint_trajectory", 10);
+  t_trajectory_publisher = pm_moveit_server_node->create_publisher<trajectory_msgs::msg::JointTrajectory>("/pm_robot_t_axis_controller/joint_trajectory", 10);
+  auto joint_state_subscriber = pm_moveit_server_node->create_subscription<sensor_msgs::msg::JointState>("/joint_states", 10, jointStateCallback, node_options_1);
+  
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Ready for operation...");
-  spin_thread->join();
+  //spin_thread->join();
+  executor.spin();
   rclcpp::shutdown();
   return 0;
 }
