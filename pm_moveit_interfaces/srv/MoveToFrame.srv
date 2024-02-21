@@ -1,9 +1,8 @@
-string endeffector_override
+string endeffector_frame_override "use_default_frame"
 string target_frame
 geometry_msgs/Vector3 translation
 geometry_msgs/Quaternion rotation
-bool exec_wait_for_user_input false
-bool execute
+bool execute_movement
 ---
 bool success
 string[] joint_names
