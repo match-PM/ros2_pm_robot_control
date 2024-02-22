@@ -74,7 +74,8 @@
         "cinttypes": "cpp",
         "typeindex": "cpp",
         "typeinfo": "cpp",
-        "variant": "cpp"
+        "variant": "cpp",
+        "core": "cpp"
     },
     "python.autoComplete.extraPaths": [
         "/home/niklas/ros2_ws/install/object_spawner_manager/local/lib/python3.10/dist-packages",

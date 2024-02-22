@@ -30,6 +30,23 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include <moveit/planning_scene/planning_scene.h>
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
+#include <iomanip>
+#include <geometry_msgs/msg/pose.hpp>
+
+Eigen::Affine3d poseMsgToAffine(const geometry_msgs::msg::Pose& pose_msg) {
+    // Extract translation
+    Eigen::Translation3d translation(pose_msg.position.x, pose_msg.position.y, pose_msg.position.z);
+
+    // Extract rotation
+    Eigen::Quaterniond rotation(pose_msg.orientation.w, pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z);
+
+    // Construct Affine3d transformation
+    Eigen::Affine3d affine = Eigen::Affine3d::Identity();
+    affine.translation() = translation.vector(); // Set translation component
+    affine.rotate(rotation);
+
+    return affine;
+}
 
 
 geometry_msgs::msg::Quaternion quaternion_multiply(geometry_msgs::msg::Quaternion q0, geometry_msgs::msg::Quaternion q1){
@@ -571,9 +588,9 @@ std::string global_return_massage;
 
 void log_pose(std::string pose_text, geometry_msgs::msg::Pose pose){
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), pose_text.c_str());
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Position X %f", pose.position.x);
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Position Y %f", pose.position.y);
-  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Position Z %f", pose.position.z);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Position X %.9f", pose.position.x);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Position Y %.9f", pose.position.y);
+  RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Position Z %.9f", pose.position.z);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Orientation W %f", pose.orientation.w);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Orientation X %f", pose.orientation.x);
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Orientation Y %f", pose.orientation.y);
@@ -629,7 +646,7 @@ bool check_goal_reached(std::vector<std::string> target_joints, std::vector<doub
     float current_joint_value = global_joint_state->position[current_joint_index];
     float differrence = std::abs(current_joint_value - target_joint_values[i]);
     
-    RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Joint: %s, Target: %f, Current: %f, Delta: %f", target_joints[i].c_str(), target_joint_values[i], current_joint_value, differrence);
+    RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Joint: %s, Target: %.9f, Current: %.9f, Delta: %.9f", target_joints[i].c_str(), target_joint_values[i], current_joint_value, differrence);
     
     
     if (differrence > delta_value)
@@ -648,9 +665,15 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> calculate_IK(std
   const moveit::core::RobotModelPtr &kinematic_model = PM_Robot_Model_Loader->getModel();
   moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
 
-  double timeout = 0.1;
+  double timeout = 0.5;
   bool success_found_ik = robot_state->setFromIK(joint_model_group, target_pose, timeout);
-  
+
+  // Eigen::Isometry3d pose_eigen;
+  // tf2::convert(target_pose, pose_eigen);
+  // std::vector<double> consitency_limits;
+  // consitency_limits = {0.0000001, 0.0000001, 0.0000001};
+  // bool success_found_ik = robot_state->setFromIK(joint_model_group, pose_eigen, endeffector, consitency_limits, timeout);
+
   if (success_found_ik)
   {
     RCLCPP_ERROR(rclcpp::get_logger("pm_moveit"), "IK solution found!");
@@ -658,7 +681,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> calculate_IK(std
     const Eigen::Isometry3d end_effector_state = robot_state->getGlobalLinkTransform(endeffector);
     tf2::Transform tf2Transform;
     tf2::convert(end_effector_state,tf2Transform);
-    tf2::Vector3 endeffector_pose_planed = tf2Transform.getOrigin();
+    //tf2::Vector3 endeffector_pose_planed = tf2Transform.getOrigin();
     // This is the same as the calculated Endeffector Pose
     //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose X %f", endeffector_pose_planed.getX());
     //RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Planned Endeffector Pose Y %f", endeffector_pose_planed.getY());
@@ -666,7 +689,7 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> calculate_IK(std
     robot_state->copyJointGroupPositions(joint_model_group, target_joint_values);
     for (std::size_t i = 0; i < joint_names.size(); ++i)
     {
-      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Joint Values for %s: %f", joint_names[i].c_str(), target_joint_values[i]);
+      RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Target Joint Values for %s: %.9f", joint_names[i].c_str(), target_joint_values[i]);
     }
   }
   else
@@ -702,12 +725,104 @@ std::tuple<bool, geometry_msgs::msg::Pose> get_pose_of_frame(std::string frame_n
 }
 
 
-geometry_msgs::msg::Pose add_translation_rotation_to_pose(geometry_msgs::msg::Pose pose, geometry_msgs::msg::Vector3 translation, geometry_msgs::msg::Quaternion rotation)
+std::tuple<bool, geometry_msgs::msg::TransformStamped> get_pose_of_frame_in_frame(std::string toFrame, std::string fromFrame)
 {
-  pose.position.x += translation.x;
-  pose.position.y += translation.y;
-  pose.position.z += translation.z;
-  pose.orientation = quaternion_multiply(pose.orientation, rotation);
+  bool get_pose_success = true;
+  geometry_msgs::msg::TransformStamped frame_transform;
+  try
+  {
+    frame_transform = tf_buffer_->lookupTransform(toFrame, fromFrame, tf2::TimePointZero);
+
+  }
+  catch (const tf2::TransformException &ex)
+  {
+    RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Could not transform %s to %s: %s", toFrame.c_str(), fromFrame.c_str(), ex.what());
+    get_pose_success = false;
+  }
+  return std::make_tuple(get_pose_success, frame_transform);
+}
+
+geometry_msgs::msg::Pose add_translation_rotation_to_pose(geometry_msgs::msg::Pose pose, const geometry_msgs::msg::Vector3 translation, geometry_msgs::msg::Quaternion rotation)
+{
+  //geometry_msgs::msg::TransformStamped frame_world_transform;
+  //tf2::fromMsg(pose, frame_world_transform);
+  //geometry_msgs::msg::TransformStamped rel_transform;
+  //rel_transform.transform.translation = translation;
+  //rel_transform.transform.rotation = rotation;
+  //rel_transform.transform.rotation = quaternion_multiply(pose.orientation, rotation);
+  tf2::Transform transform_1;
+  transform_1.setOrigin(tf2::Vector3( pose.position.x,
+                                      pose.position.y,
+                                      pose.position.z));
+  transform_1.setRotation(tf2::Quaternion(  pose.orientation.x,
+                                            pose.orientation.y,
+                                            pose.orientation.z,
+                                            pose.orientation.w));
+
+  tf2::Transform transform_2;
+  transform_2.setOrigin(tf2::Vector3(translation.x, translation.y, translation.z));
+  transform_2.setRotation(tf2::Quaternion(rotation.x,
+                                          rotation.y,
+                                          rotation.z,
+                                            rotation.w));
+
+  tf2::Transform transform_res;
+  transform_res.mult(transform_1, transform_2);
+  auto vector = transform_res.getOrigin();
+  pose.position.x = vector.x();
+  pose.position.y = vector.y();
+  pose.position.z = vector.z();
+  auto quat = transform_res.getRotation();
+  pose.orientation.x = quat.x();
+  pose.orientation.y = quat.y();
+  pose.orientation.z = quat.z();
+  pose.orientation.w = quat.w();
+  //tf2::fromMsg(transform_res, pose);
+  return pose;
+}
+
+geometry_msgs::msg::Pose get_pose_endeffector_override(std::string initial_endeffector_frame,std::string endeffector_override_frame, geometry_msgs::msg::Pose initial_endeffector_pose)
+{
+  bool success_frame;
+  geometry_msgs::msg::Pose pose_rel;
+  geometry_msgs::msg::TransformStamped rel_transform;
+  std::tie(success_frame, rel_transform) = get_pose_of_frame_in_frame(endeffector_override_frame,initial_endeffector_frame);
+  
+  if (!success_frame)
+  {
+    return initial_endeffector_pose;
+  }
+
+  tf2::Transform transform_1;
+  transform_1.setOrigin(tf2::Vector3( initial_endeffector_pose.position.x,
+                                      initial_endeffector_pose.position.y,
+                                      initial_endeffector_pose.position.z));
+  transform_1.setRotation(tf2::Quaternion(  initial_endeffector_pose.orientation.x,
+                                            initial_endeffector_pose.orientation.y,
+                                            initial_endeffector_pose.orientation.z,
+                                            initial_endeffector_pose.orientation.w));
+
+  tf2::Transform transform_2;
+  transform_2.setOrigin(tf2::Vector3(rel_transform.transform.translation.x, rel_transform.transform.translation.y, rel_transform.transform.translation.z));
+  transform_2.setRotation(tf2::Quaternion(rel_transform.transform.rotation.x,
+                                          rel_transform.transform.rotation.y,
+                                          rel_transform.transform.rotation.z,
+                                          rel_transform.transform.rotation.w));
+
+  geometry_msgs::msg::Pose pose;
+  tf2::Transform transform_res;
+
+  transform_res.mult(transform_1, transform_2);
+  auto vector = transform_res.getOrigin();
+  pose.position.x = vector.x();
+  pose.position.y = vector.y();
+  pose.position.z = vector.z();
+  auto quat = transform_res.getRotation();
+  pose.orientation.x = quat.x();
+  pose.orientation.y = quat.y();
+  pose.orientation.z = quat.z();
+  pose.orientation.w = quat.w();
+  //tf2::fromMsg(transform_res, pose);
   return pose;
 }
 
@@ -720,19 +835,18 @@ geometry_msgs::msg::Quaternion check_rotation(geometry_msgs::msg::Quaternion rot
   return rotation;
 }
 
-bool set_move_group(std::string planning_group, 
-                    std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group, 
+bool set_move_group(std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group, 
                     std::vector<double> target_joint_values,    
                     bool execute_movement)
  {
   bool success_calculate_plan = false;
   move_group->setPlanningTime(20);
-  //move_group->setGoalPositionTolerance(1e-9); // 10 nm    
-  move_group->setGoalPositionTolerance(0.000000001); // 1 nm    
   move_group->setStartStateToCurrentState();
+
+  move_group->setGoalJointTolerance(1e-9);
+
   move_group->setJointValueTarget(target_joint_values);
   move_group->setNumPlanningAttempts(100);
-  bool move_group_success = false;
   success_calculate_plan = (move_group->plan(*plan) == moveit::core::MoveItErrorCode::SUCCESS);
   if (!success_calculate_plan)
   {
@@ -800,7 +914,7 @@ void log_target_pose_delta(std::string endeffector, geometry_msgs::msg::Pose tar
 {
   geometry_msgs::msg::Pose moved_to_pose;
   bool frame_success;
-
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
   std::tie(frame_success, moved_to_pose) = get_pose_of_frame(endeffector);
 
   RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Moved to Endeffector Pose: ");
@@ -826,13 +940,6 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_relat
 {
 
   std::string endeffector = move_group->getEndEffectorLink();
-  // const moveit::core::JointModelGroup *joint_model_group = move_group->getCurrentState(1.0)->getJointModelGroup(planning_group);
-  // const std::vector<std::string> &joint_names = joint_model_group->getVariableNames();
-  // const moveit::core::RobotModelPtr &kinematic_model = PM_Robot_Model_Loader->getModel();
-  // moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
-  // robot_state->setToDefaultValues();
-  // auto state = moveit::core::RobotState(kinematic_model);
-  //geometry_msgs::msg::Pose target_pose;
   geometry_msgs::msg::Quaternion target_rotation;
   std::vector<double> target_joint_values;
   std::vector<std::string> joint_names;
@@ -861,28 +968,25 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_relat
   {
     return {false, joint_names, target_joint_values};
   }
-  bool move_success = set_move_group(planning_group, move_group, target_joint_values, execute_movement);
+  bool move_success = set_move_group(move_group, target_joint_values, execute_movement);
 
   if (!move_success || !execute_movement)
   {
     return {move_success, joint_names, target_joint_values};
   }
 
-  float lateral_tolerance = 0.0005;
-  float angular_tolerance = 0.01;
+  float lateral_tolerance_coarse = 1e-2;
+  float angular_tolerance_coarse = 0.01;
+  float lateral_tolerance_fine = 1e-7;
+  float angular_tolerance_fine = 0.0001;
 
-  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance, angular_tolerance);
+  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance_coarse, angular_tolerance_coarse);
 
   log_target_pose_delta(endeffector, target_pose);
 
-  // move the robot to the calculated pose to eliminate residual error
+  // this may not be necessary anymore
   publish_target_joint_trajectory_xyzt(planning_group, target_joint_values);
-
-  lateral_tolerance = 0.0000001;
-  angular_tolerance = 0.0001;
-
-  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance, angular_tolerance);
-
+  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance_fine, angular_tolerance_fine);
   log_target_pose_delta(endeffector, target_pose);
 
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
@@ -897,20 +1001,8 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_to_fr
                                                                             geometry_msgs::msg::Quaternion rotation,
                                                                             bool execute_movement)
 {
-  if (endeffector_frame_override != default_endeffector_string)
-  {
-    RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "NOT IMPLEMENTED YET!!! Overriding Endeffector Frame to: %s", endeffector_frame_override.c_str());
-    //move_group->setEndEffectorLink(endeffector_frame_override);
-  }
 
   std::string endeffector = move_group->getEndEffectorLink();
-  // const moveit::core::JointModelGroup *joint_model_group = move_group->getCurrentState(1.0)->getJointModelGroup(planning_group);
-  // const std::vector<std::string> &joint_names = joint_model_group->getVariableNames();
-  // const moveit::core::RobotModelPtr &kinematic_model = PM_Robot_Model_Loader->getModel();
-  // moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
-  // robot_state->setToDefaultValues();
-  // auto state = moveit::core::RobotState(kinematic_model);
-  //geometry_msgs::msg::Pose target_pose;
   geometry_msgs::msg::Quaternion target_rotation;
   std::vector<double> target_joint_values;
   std::vector<std::string> joint_names;
@@ -927,6 +1019,12 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_to_fr
     return std::make_tuple(false, joint_names, target_joint_values);
   }
 
+  if (endeffector_frame_override != default_endeffector_string)
+  {
+    RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Overriding Endeffector Frame to: %s", endeffector_frame_override.c_str());
+    target_pose = get_pose_endeffector_override(endeffector,endeffector_frame_override,target_pose);
+  }
+
   // Check if rotation is valid and set to default if not
   rotation = check_rotation(rotation);
 
@@ -939,28 +1037,25 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_to_fr
   {
     return {false, joint_names, target_joint_values};
   }
-  bool move_success = set_move_group(planning_group, move_group, target_joint_values, execute_movement);
+  bool move_success = set_move_group(move_group, target_joint_values, execute_movement);
 
   if (!move_success || !execute_movement)
   {
     return {move_success, joint_names, target_joint_values};
   }
 
-  float lateral_tolerance = 0.0005;
-  float angular_tolerance = 0.01;
+  float lateral_tolerance_coarse = 1e-2;
+  float angular_tolerance_coarse = 0.01;
+  float lateral_tolerance_fine = 1e-7;
+  float angular_tolerance_fine = 0.0001;
 
-  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance, angular_tolerance);
+  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance_coarse, angular_tolerance_coarse);
 
   log_target_pose_delta(endeffector, target_pose);
-  
-  // move the robot to the calculated pose to eliminate residual error
+
+  // this may not be necessary anymore
   publish_target_joint_trajectory_xyzt(planning_group, target_joint_values);
-
-  lateral_tolerance = 0.0000001;
-  angular_tolerance = 0.0001;
-
-  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance, angular_tolerance);
-
+  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance_fine, angular_tolerance_fine);
   log_target_pose_delta(endeffector, target_pose);
 
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
@@ -971,29 +1066,21 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_to_fr
 std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_to_pose(std::string planning_group,
                                                                            std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group,
                                                                            geometry_msgs::msg::Pose target_pose,
-                                                                           std::string endeffector_override,
+                                                                           std::string endeffector_frame_override,
                                                                            bool execute_movement)
 {
-  if (endeffector_override != default_endeffector_string)
-  {
-    RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "NOT IMPLEMENTED YET!!! Overriding Endeffector to: %s", endeffector_override.c_str());
-    //move_group->setEndEffectorLink(endeffector_override);
-  }
-
   std::string endeffector = move_group->getEndEffectorLink();
-  // const moveit::core::JointModelGroup *joint_model_group = move_group->getCurrentState(1.0)->getJointModelGroup(planning_group);
-  // const std::vector<std::string> &joint_names = joint_model_group->getVariableNames();
-  // const moveit::core::RobotModelPtr &kinematic_model = PM_Robot_Model_Loader->getModel();
-  // moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
-  // robot_state->setToDefaultValues();
-  // auto state = moveit::core::RobotState(kinematic_model);
-  //geometry_msgs::msg::Pose target_pose;
   geometry_msgs::msg::Quaternion target_rotation;
   std::vector<double> target_joint_values;
   std::vector<std::string> joint_names;
   bool success_ik;
-  //bool extract_frame_success;
   // Get the target_pose
+
+  if (endeffector_frame_override != default_endeffector_string)
+  {
+    RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Overriding Endeffector Frame to: %s", endeffector_frame_override.c_str());
+    target_pose = get_pose_endeffector_override(endeffector,endeffector_frame_override,target_pose);
+  }
 
   log_pose("Calculated Endeffector Pose: ", target_pose);
 
@@ -1003,27 +1090,25 @@ std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_to_po
   {
     return {false, joint_names, target_joint_values};
   }
-  bool move_success = set_move_group(planning_group, move_group, target_joint_values, execute_movement);
+  bool move_success = set_move_group(move_group, target_joint_values, execute_movement);
 
   if (!move_success || !execute_movement)
   {
     return {move_success, joint_names, target_joint_values};
   }
 
-  float lateral_tolerance = 0.0005;
-  float angular_tolerance = 0.01;
-  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance, angular_tolerance);
+  float lateral_tolerance_coarse = 1e-2;
+  float angular_tolerance_coarse = 0.01;
+  float lateral_tolerance_fine = 1e-7;
+  float angular_tolerance_fine = 0.0001;
+
+  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance_coarse, angular_tolerance_coarse);
 
   log_target_pose_delta(endeffector, target_pose);
-  
-  // move the robot to the calculated pose to eliminate residual error
+
+  // this may not be necessary anymore
   publish_target_joint_trajectory_xyzt(planning_group, target_joint_values);
-
-  lateral_tolerance = 0.0000001;
-  angular_tolerance = 0.0001;
-
-  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance, angular_tolerance);
-
+  wait_for_movement_to_finish(joint_names, target_joint_values, lateral_tolerance_fine, angular_tolerance_fine);
   log_target_pose_delta(endeffector, target_pose);
 
   RCLCPP_INFO(rclcpp::get_logger("pm_moveit"), "Waiting for next command...");
