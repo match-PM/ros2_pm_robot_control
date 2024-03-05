@@ -19,9 +19,6 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <tf2/convert.h>
 #include "pm_moveit_interfaces/srv/execute_plan.hpp"
-#include "pm_moveit_interfaces/srv/move_cam1_tcp_to.hpp"
-#include "pm_moveit_interfaces/srv/move_laser_tcp_to.hpp"
-#include "pm_moveit_interfaces/srv/move_tool_tcp_to.hpp"
 
 #include "pm_moveit_interfaces/srv/move_relative.hpp"
 #include "pm_moveit_interfaces/srv/move_to_pose.hpp"
@@ -659,12 +656,34 @@ bool check_goal_reached(std::vector<std::string> target_joints, std::vector<doub
 
 std::tuple<bool, std::vector<std::string>, std::vector<double>> calculate_IK(std::string planning_group, std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group, geometry_msgs::msg::Pose target_pose){
   std::vector<double> target_joint_values;
+  std::vector<double> min_joint_values;
+  std::vector<double> max_joint_values;
   std::string endeffector = move_group->getEndEffectorLink();
   const moveit::core::JointModelGroup *joint_model_group = move_group->getCurrentState(1.0)->getJointModelGroup(planning_group);
   const std::vector<std::string> &joint_names = joint_model_group->getVariableNames();
   const moveit::core::RobotModelPtr &kinematic_model = PM_Robot_Model_Loader->getModel();
   moveit::core::RobotStatePtr robot_state(new moveit::core::RobotState(kinematic_model));
 
+
+  // There is an issue when setting the target pose to a pose that is in range of 10 um. 
+  // For a reason i dont know, the IK solution returns the current joint values
+  // To account for that the robot state is set to the max joint value before setting fromIK
+  // Please note that this is a workaround and a better solution should be found for this issue
+
+  // Get bounds of joints
+  moveit::core::JointBoundsVector joint_bounds = joint_model_group->getActiveJointModelsBounds();
+  
+  //get joint limits
+  for (size_t i = 0; i < joint_bounds.size(); i++)
+  {
+    min_joint_values.push_back(joint_bounds[i][0][0].min_position_);
+    max_joint_values.push_back(joint_bounds[i][0][0].max_position_);
+
+    RCLCPP_DEBUG(rclcpp::get_logger("pm_moveit"), " Lower: %.9f, Upper: %.9f", joint_bounds[i][0][0].min_position_, joint_bounds[i][0][0].max_position_);
+  }
+  
+
+  robot_state->setJointGroupPositions(joint_model_group, max_joint_values);
   double timeout = 0.5;
   bool success_found_ik = robot_state->setFromIK(joint_model_group, target_pose, timeout);
 
@@ -847,6 +866,7 @@ bool set_move_group(std::shared_ptr<moveit::planning_interface::MoveGroupInterfa
 
   move_group->setJointValueTarget(target_joint_values);
   move_group->setNumPlanningAttempts(100);
+  move_group->setReplanAttempts(10000);
   success_calculate_plan = (move_group->plan(*plan) == moveit::core::MoveItErrorCode::SUCCESS);
   if (!success_calculate_plan)
   {
@@ -925,11 +945,19 @@ void log_target_pose_delta(std::string endeffector, geometry_msgs::msg::Pose tar
   double deltaX = target_pose.position.x - moved_to_pose.position.x;
   double deltaY = target_pose.position.y - moved_to_pose.position.y;
   double deltaZ = target_pose.position.z - moved_to_pose.position.z;
+  double deltaOrientW = target_pose.orientation.w - moved_to_pose.orientation.w;
+  double deltaOrientX = target_pose.orientation.x - moved_to_pose.orientation.x;
+  double deltaOrientY = target_pose.orientation.y - moved_to_pose.orientation.y;
+  double deltaOrientZ = target_pose.orientation.z - moved_to_pose.orientation.z;
 
   RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Pose Deltas: ");
   RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "X: %f um", deltaX * 1000000);
   RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Y: %f um", deltaY * 1000000);
   RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Z: %f um", deltaZ * 1000000);
+  RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Q_w: %f", deltaOrientW);
+  RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Q_x: %f", deltaOrientX);
+  RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Q_y: %f", deltaOrientY);
+  RCLCPP_WARN(rclcpp::get_logger("pm_moveit"), "Q_z: %f", deltaOrientZ);
 }
 
 std::tuple<bool, std::vector<std::string>, std::vector<double>> move_group_relative(std::string planning_group,

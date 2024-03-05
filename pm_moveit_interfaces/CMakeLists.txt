@@ -27,14 +27,11 @@ if(BUILD_TESTING)
 endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/MoveCam1TcpTo.srv"
-  "srv/MoveLaserTcpTo.srv"
-  "srv/MoveToolTcpTo.srv"
   "srv/ExecutePlan.srv"
   "srv/MoveRelative.srv"
   "srv/MoveToFrame.srv"
   "srv/MoveToPose.srv"
-  DEPENDENCIES geometry_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
+  DEPENDENCIES geometry_msgs # Add packages that above messages depend on
 )
 
 ament_package()
